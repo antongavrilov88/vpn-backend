@@ -13,11 +13,13 @@ type Config struct {
 }
 
 type HTTPConfig struct {
-	Addr            string
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
-	IdleTimeout     time.Duration
-	ShutdownTimeout time.Duration
+	Addr             string
+	ReadTimeout      time.Duration
+	WriteTimeout     time.Duration
+	IdleTimeout      time.Duration
+	RequestTimeout   time.Duration
+	ReadinessTimeout time.Duration
+	ShutdownTimeout  time.Duration
 }
 
 type DBConfig struct {
@@ -40,6 +42,16 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	requestTimeout, err := getDurationEnv("HTTP_REQUEST_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+
+	readinessTimeout, err := getDurationEnv("HTTP_READINESS_TIMEOUT", 2*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+
 	shutdownTimeout, err := getDurationEnv("HTTP_SHUTDOWN_TIMEOUT", 10*time.Second)
 	if err != nil {
 		return Config{}, err
@@ -48,11 +60,13 @@ func Load() (Config, error) {
 	cfg := Config{
 		AppEnv: getEnv("APP_ENV", "development"),
 		HTTP: HTTPConfig{
-			Addr:            getEnv("HTTP_ADDR", ":8080"),
-			ReadTimeout:     readTimeout,
-			WriteTimeout:    writeTimeout,
-			IdleTimeout:     idleTimeout,
-			ShutdownTimeout: shutdownTimeout,
+			Addr:             getEnv("HTTP_ADDR", ":8080"),
+			ReadTimeout:      readTimeout,
+			WriteTimeout:     writeTimeout,
+			IdleTimeout:      idleTimeout,
+			RequestTimeout:   requestTimeout,
+			ReadinessTimeout: readinessTimeout,
+			ShutdownTimeout:  shutdownTimeout,
 		},
 		DB: DBConfig{
 			URL: os.Getenv("DB_URL"),
