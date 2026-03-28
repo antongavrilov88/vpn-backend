@@ -58,8 +58,30 @@ func TestLoad(t *testing.T) {
 	}
 }
 
-func TestLoadRequiresDBURL(t *testing.T) {
+func TestLoadBuildsDBURLFromPostgresEnv(t *testing.T) {
+	t.Setenv("POSTGRES_HOST", "localhost")
+	t.Setenv("POSTGRES_PORT", "5433")
+	t.Setenv("POSTGRES_DB", "vpn_mvp")
+	t.Setenv("POSTGRES_USER", "postgres")
+	t.Setenv("POSTGRES_PASSWORD", "postgres")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.DB.URL != "postgres://postgres:postgres@localhost:5433/vpn_mvp?sslmode=disable" {
+		t.Fatalf("DB.URL = %q, want derived url", cfg.DB.URL)
+	}
+}
+
+func TestLoadRequiresDatabaseConfiguration(t *testing.T) {
 	t.Setenv("DB_URL", "")
+	t.Setenv("POSTGRES_HOST", "")
+	t.Setenv("POSTGRES_PORT", "")
+	t.Setenv("POSTGRES_DB", "")
+	t.Setenv("POSTGRES_USER", "")
+	t.Setenv("POSTGRES_PASSWORD", "")
 
 	_, err := Load()
 	if err == nil {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 )
@@ -69,12 +70,12 @@ func Load() (Config, error) {
 			ShutdownTimeout:  shutdownTimeout,
 		},
 		DB: DBConfig{
-			URL: os.Getenv("DB_URL"),
+			URL: getEnv("DB_URL", buildPostgresURL()),
 		},
 	}
 
 	if cfg.DB.URL == "" {
-		return Config{}, fmt.Errorf("DB_URL is required")
+		return Config{}, fmt.Errorf("DB_URL or POSTGRES_HOST/POSTGRES_PORT/POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD is required")
 	}
 
 	return cfg, nil
@@ -101,4 +102,26 @@ func getDurationEnv(key string, fallback time.Duration) (time.Duration, error) {
 	}
 
 	return duration, nil
+}
+
+func buildPostgresURL() string {
+	host := os.Getenv("POSTGRES_HOST")
+	port := os.Getenv("POSTGRES_PORT")
+	database := os.Getenv("POSTGRES_DB")
+	user := os.Getenv("POSTGRES_USER")
+	password := os.Getenv("POSTGRES_PASSWORD")
+
+	if host == "" || port == "" || database == "" || user == "" || password == "" {
+		return ""
+	}
+
+	return (&url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(user, password),
+		Host:   fmt.Sprintf("%s:%s", host, port),
+		Path:   database,
+		RawQuery: url.Values{
+			"sslmode": []string{"disable"},
+		}.Encode(),
+	}).String()
 }
