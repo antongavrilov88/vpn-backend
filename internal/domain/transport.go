@@ -14,31 +14,22 @@ type VPNTransport interface {
 }
 
 type CreatePeerInput struct {
-	DeviceID   int64
 	PublicKey  string
 	AssignedIP string
 }
 
 type RemovePeerInput struct {
-	DeviceID   int64
 	PublicKey  string
 	AssignedIP string
 }
 
 type BuildClientConfigInput struct {
-	DeviceID            int64
-	ServerPublicKey     string
-	ClientPrivateKey    string
-	ClientAddress       string
-	ServerEndpoint      string
-	ServerAllowedIPs    []string
-	DNS                 []string
-	PresharedKey        string
-	PersistentKeepalive *int32
+	DeviceName       string
+	ClientPrivateKey string
+	ClientAddress    string
 }
 
 type GetPeerStatusInput struct {
-	DeviceID   int64
 	PublicKey  string
 	AssignedIP string
 }
@@ -48,13 +39,11 @@ type ReconcileInput struct {
 }
 
 type Peer struct {
-	DeviceID   int64
 	PublicKey  string
 	AssignedIP string
 }
 
 type PeerStatus struct {
-	DeviceID        int64
 	PublicKey       string
 	AssignedIP      string
 	IsPresent       bool
