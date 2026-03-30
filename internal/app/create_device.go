@@ -3,9 +3,12 @@ package app
 import (
 	"context"
 	"errors"
+	"time"
 
 	"vpn-backend/internal/domain"
 )
+
+const maxCreateDeviceAttempts = 3
 
 type CreateDeviceUseCase struct {
 	userRepository         domain.UserRepository
@@ -81,11 +84,6 @@ func (uc *CreateDeviceUseCase) Execute(ctx context.Context, input CreateDeviceIn
 		return nil, err
 	}
 
-	assignedIP, err := uc.ipAllocator.AllocateNext(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	encryptedPrivateKey, err := uc.privateKeyCipher.Encrypt(ctx, keyPair.PrivateKey)
 	if err != nil {
 		return nil, err
@@ -96,39 +94,36 @@ func (uc *CreateDeviceUseCase) Execute(ctx context.Context, input CreateDeviceIn
 		Name:                input.Name,
 		PublicKey:           keyPair.PublicKey,
 		EncryptedPrivateKey: encryptedPrivateKey,
-		AssignedIP:          assignedIP,
 		Status:              domain.DeviceStatusActive,
 	}
 
+	createdDevice, err := uc.createDeviceRecord(ctx, device)
+	if err != nil {
+		return nil, err
+	}
+
 	peerInput := domain.CreatePeerInput{
-		PublicKey:  keyPair.PublicKey,
-		AssignedIP: assignedIP,
+		PublicKey:  createdDevice.PublicKey,
+		AssignedIP: createdDevice.AssignedIP,
 	}
 
 	if _, err := uc.transport.CreatePeer(ctx, peerInput); err != nil {
+		uc.revokeDeviceOnFailure(ctx, createdDevice)
+
 		return nil, err
 	}
 
 	clientConfig, err := uc.transport.BuildClientConfig(ctx, domain.BuildClientConfigInput{
 		DeviceName:       input.Name,
 		ClientPrivateKey: keyPair.PrivateKey,
-		ClientAddress:    assignedIP,
+		ClientAddress:    createdDevice.AssignedIP,
 	})
 	if err != nil {
 		_ = uc.transport.RemovePeer(ctx, domain.RemovePeerInput{
-			PublicKey:  keyPair.PublicKey,
-			AssignedIP: assignedIP,
+			PublicKey:  createdDevice.PublicKey,
+			AssignedIP: createdDevice.AssignedIP,
 		})
-
-		return nil, err
-	}
-
-	createdDevice, err := uc.deviceRepository.Create(ctx, device)
-	if err != nil {
-		_ = uc.transport.RemovePeer(ctx, domain.RemovePeerInput{
-			PublicKey:  keyPair.PublicKey,
-			AssignedIP: assignedIP,
-		})
+		uc.revokeDeviceOnFailure(ctx, createdDevice)
 
 		return nil, err
 	}
@@ -137,4 +132,36 @@ func (uc *CreateDeviceUseCase) Execute(ctx context.Context, input CreateDeviceIn
 		Device:       createdDevice,
 		ClientConfig: clientConfig,
 	}, nil
+}
+
+func (uc *CreateDeviceUseCase) createDeviceRecord(ctx context.Context, device domain.Device) (*domain.Device, error) {
+	for attempt := 0; attempt < maxCreateDeviceAttempts; attempt++ {
+		assignedIP, err := uc.ipAllocator.AllocateNext(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		device.AssignedIP = assignedIP
+
+		createdDevice, err := uc.deviceRepository.Create(ctx, device)
+		if err == nil {
+			return createdDevice, nil
+		}
+
+		if !errors.Is(err, domain.ErrConflict) {
+			return nil, err
+		}
+	}
+
+	return nil, domain.ErrConflict
+}
+
+func (uc *CreateDeviceUseCase) revokeDeviceOnFailure(ctx context.Context, device *domain.Device) {
+	revokedAt := time.Now().UTC()
+	device.Status = domain.DeviceStatusRevoked
+	device.RevokedAt = &revokedAt
+
+	if _, err := uc.deviceRepository.Update(ctx, *device); err != nil {
+		return
+	}
 }
