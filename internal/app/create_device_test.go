@@ -246,6 +246,8 @@ func (f *fakeUserRepository) Update(context.Context, domain.User) (*domain.User,
 
 type fakeDeviceRepository struct {
 	callLog           *[]string
+	getByIDDevice     *domain.Device
+	getByIDErr        error
 	getByPublicKeyErr error
 	createErr         error
 	createResult      *domain.Device
@@ -254,7 +256,10 @@ type fakeDeviceRepository struct {
 }
 
 func (f *fakeDeviceRepository) GetByID(context.Context, int64) (*domain.Device, error) {
-	return nil, nil
+	if f.callLog != nil {
+		*f.callLog = append(*f.callLog, "device.get_by_id")
+	}
+	return f.getByIDDevice, f.getByIDErr
 }
 
 func (f *fakeDeviceRepository) GetByPublicKey(context.Context, string) (*domain.Device, error) {
@@ -328,11 +333,15 @@ func (f *fakeKeyGenerator) Generate() (*domain.KeyPair, error) {
 }
 
 type fakePrivateKeyCipher struct {
-	callLog          *[]string
-	encryptPlaintext string
-	encryptResult    string
-	encryptErr       error
-	encryptCalls     int
+	callLog           *[]string
+	encryptPlaintext  string
+	encryptResult     string
+	encryptErr        error
+	encryptCalls      int
+	decryptCiphertext string
+	decryptResult     string
+	decryptErr        error
+	decryptCalls      int
 }
 
 func (f *fakePrivateKeyCipher) Encrypt(_ context.Context, plaintext string) (string, error) {
@@ -342,8 +351,13 @@ func (f *fakePrivateKeyCipher) Encrypt(_ context.Context, plaintext string) (str
 	return f.encryptResult, f.encryptErr
 }
 
-func (f *fakePrivateKeyCipher) Decrypt(context.Context, string) (string, error) {
-	return "", nil
+func (f *fakePrivateKeyCipher) Decrypt(_ context.Context, ciphertext string) (string, error) {
+	if f.callLog != nil {
+		*f.callLog = append(*f.callLog, "cipher.decrypt")
+	}
+	f.decryptCalls++
+	f.decryptCiphertext = ciphertext
+	return f.decryptResult, f.decryptErr
 }
 
 type fakeIPAllocator struct {

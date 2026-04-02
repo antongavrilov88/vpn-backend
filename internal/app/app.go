@@ -17,10 +17,11 @@ import (
 )
 
 type App struct {
-	Config       config.Config
-	Logger       *slog.Logger
-	DB           *pgxpool.Pool
-	CreateDevice *CreateDeviceUseCase
+	Config             config.Config
+	Logger             *slog.Logger
+	DB                 *pgxpool.Pool
+	CreateDevice       *CreateDeviceUseCase
+	ResendDeviceConfig *ResendDeviceConfigUseCase
 }
 
 func New(ctx context.Context, cfg config.Config) (*App, error) {
@@ -40,12 +41,18 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
+	resendDeviceConfig, err := newResendDeviceConfigUseCase(cfg, db)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return &App{
-		Config:       cfg,
-		Logger:       log,
-		DB:           db,
-		CreateDevice: createDevice,
+		Config:             cfg,
+		Logger:             log,
+		DB:                 db,
+		CreateDevice:       createDevice,
+		ResendDeviceConfig: resendDeviceConfig,
 	}, nil
 }
 
@@ -115,6 +122,49 @@ func newCreateDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*CreateDeviceU
 		keyGenerator,
 		privateKeyCipher,
 		ipAllocator,
+		clientConfigBuilder,
+	), nil
+}
+
+func newResendDeviceConfigUseCase(cfg config.Config, db *pgxpool.Pool) (*ResendDeviceConfigUseCase, error) {
+	requiredSettings := []requiredSetting{
+		{name: "DEVICE_PRIVATE_KEY_CIPHER_KEY", present: len(cfg.Crypto.DevicePrivateKeyCipherKey) > 0},
+		{name: "VPN_SERVER_PUBLIC_KEY", present: cfg.VPN.ServerPublicKey != ""},
+		{name: "VPN_SERVER_ENDPOINT", present: cfg.VPN.Endpoint != ""},
+		{name: "VPN_ALLOWED_IPS", present: len(cfg.VPN.AllowedIPs) > 0},
+	}
+
+	if !hasAny(requiredSettings) {
+		return nil, nil
+	}
+
+	if missing := missingSettings(requiredSettings); len(missing) > 0 {
+		return nil, fmt.Errorf("incomplete resend device config provisioning config: missing %s", strings.Join(missing, ", "))
+	}
+
+	userRepository := postgres.NewUserRepository(db)
+	deviceRepository := postgres.NewDeviceRepository(db)
+
+	privateKeyCipher, err := encryption.NewPrivateKeyCipher(cfg.Crypto.DevicePrivateKeyCipherKey)
+	if err != nil {
+		return nil, fmt.Errorf("create private key cipher: %w", err)
+	}
+
+	clientConfigBuilder, err := wireguard.NewClientConfigBuilder(wireguard.ClientConfigBuilderConfig{
+		ServerPublicKey:     cfg.VPN.ServerPublicKey,
+		Endpoint:            cfg.VPN.Endpoint,
+		AllowedIPs:          cfg.VPN.AllowedIPs,
+		DNS:                 cfg.VPN.DNS,
+		PersistentKeepalive: cfg.VPN.PersistentKeepalive,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create client config builder: %w", err)
+	}
+
+	return NewResendDeviceConfigUseCase(
+		userRepository,
+		deviceRepository,
+		privateKeyCipher,
 		clientConfigBuilder,
 	), nil
 }
