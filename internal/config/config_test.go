@@ -14,8 +14,17 @@ func TestLoad(t *testing.T) {
 	t.Setenv("HTTP_REQUEST_TIMEOUT", "32s")
 	t.Setenv("HTTP_READINESS_TIMEOUT", "3s")
 	t.Setenv("HTTP_SHUTDOWN_TIMEOUT", "12s")
+	t.Setenv("PROXY_SSH_TIMEOUT", "7s")
 	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
 	t.Setenv("DEVICE_PRIVATE_KEY_CIPHER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	t.Setenv("PROXY_SSH_HOST", "proxy.internal")
+	t.Setenv("PROXY_SSH_PORT", "2222")
+	t.Setenv("PROXY_SSH_USER", "deploy")
+	t.Setenv("PROXY_SSH_PRIVATE_KEY_PATH", "/keys/proxy")
+	t.Setenv("PROXY_SSH_KNOWN_HOSTS_PATH", "/keys/known_hosts")
+	t.Setenv("PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", "false")
+	t.Setenv("PROXY_ADD_PEER_COMMAND", "sudo /usr/local/bin/vpn-peer-add")
+	t.Setenv("PROXY_REMOVE_PEER_COMMAND", "sudo /usr/local/bin/vpn-peer-remove")
 
 	cfg, err := Load()
 	if err != nil {
@@ -61,6 +70,42 @@ func TestLoad(t *testing.T) {
 	if len(cfg.Crypto.DevicePrivateKeyCipherKey) != 32 {
 		t.Fatalf("Crypto.DevicePrivateKeyCipherKey length = %d, want %d", len(cfg.Crypto.DevicePrivateKeyCipherKey), 32)
 	}
+
+	if cfg.Proxy.Host != "proxy.internal" {
+		t.Fatalf("Proxy.Host = %q, want %q", cfg.Proxy.Host, "proxy.internal")
+	}
+
+	if cfg.Proxy.Port != 2222 {
+		t.Fatalf("Proxy.Port = %d, want %d", cfg.Proxy.Port, 2222)
+	}
+
+	if cfg.Proxy.User != "deploy" {
+		t.Fatalf("Proxy.User = %q, want %q", cfg.Proxy.User, "deploy")
+	}
+
+	if cfg.Proxy.PrivateKeyPath != "/keys/proxy" {
+		t.Fatalf("Proxy.PrivateKeyPath = %q, want %q", cfg.Proxy.PrivateKeyPath, "/keys/proxy")
+	}
+
+	if cfg.Proxy.KnownHostsPath != "/keys/known_hosts" {
+		t.Fatalf("Proxy.KnownHostsPath = %q, want %q", cfg.Proxy.KnownHostsPath, "/keys/known_hosts")
+	}
+
+	if cfg.Proxy.InsecureSkipHostKeyCheck {
+		t.Fatal("Proxy.InsecureSkipHostKeyCheck = true, want false")
+	}
+
+	if cfg.Proxy.AddPeerCommand != "sudo /usr/local/bin/vpn-peer-add" {
+		t.Fatalf("Proxy.AddPeerCommand = %q, want expected value", cfg.Proxy.AddPeerCommand)
+	}
+
+	if cfg.Proxy.RemovePeerCommand != "sudo /usr/local/bin/vpn-peer-remove" {
+		t.Fatalf("Proxy.RemovePeerCommand = %q, want expected value", cfg.Proxy.RemovePeerCommand)
+	}
+
+	if cfg.Proxy.Timeout != 7*time.Second {
+		t.Fatalf("Proxy.Timeout = %v, want %v", cfg.Proxy.Timeout, 7*time.Second)
+	}
 }
 
 func TestLoadBuildsDBURLFromPostgresEnv(t *testing.T) {
@@ -100,6 +145,26 @@ func TestLoadRejectsInvalidDuration(t *testing.T) {
 	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
 	t.Setenv("DEVICE_PRIVATE_KEY_CIPHER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	t.Setenv("HTTP_REQUEST_TIMEOUT", "not-a-duration")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadRejectsInvalidProxyTimeout(t *testing.T) {
+	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("PROXY_SSH_TIMEOUT", "not-a-duration")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadRejectsInvalidProxyHostKeyCheckFlag(t *testing.T) {
+	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", "maybe")
 
 	_, err := Load()
 	if err == nil {
