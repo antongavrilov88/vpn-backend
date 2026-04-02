@@ -15,6 +15,7 @@ func TestLoad(t *testing.T) {
 	t.Setenv("HTTP_READINESS_TIMEOUT", "3s")
 	t.Setenv("HTTP_SHUTDOWN_TIMEOUT", "12s")
 	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("DEVICE_PRIVATE_KEY_CIPHER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 
 	cfg, err := Load()
 	if err != nil {
@@ -56,6 +57,10 @@ func TestLoad(t *testing.T) {
 	if cfg.DB.URL != "postgres://test:test@localhost:5432/test?sslmode=disable" {
 		t.Fatalf("DB.URL = %q, want expected url", cfg.DB.URL)
 	}
+
+	if len(cfg.Crypto.DevicePrivateKeyCipherKey) != 32 {
+		t.Fatalf("Crypto.DevicePrivateKeyCipherKey length = %d, want %d", len(cfg.Crypto.DevicePrivateKeyCipherKey), 32)
+	}
 }
 
 func TestLoadBuildsDBURLFromPostgresEnv(t *testing.T) {
@@ -64,6 +69,7 @@ func TestLoadBuildsDBURLFromPostgresEnv(t *testing.T) {
 	t.Setenv("POSTGRES_DB", "vpn_mvp")
 	t.Setenv("POSTGRES_USER", "postgres")
 	t.Setenv("POSTGRES_PASSWORD", "postgres")
+	t.Setenv("DEVICE_PRIVATE_KEY_CIPHER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 
 	cfg, err := Load()
 	if err != nil {
@@ -82,6 +88,7 @@ func TestLoadRequiresDatabaseConfiguration(t *testing.T) {
 	t.Setenv("POSTGRES_DB", "")
 	t.Setenv("POSTGRES_USER", "")
 	t.Setenv("POSTGRES_PASSWORD", "")
+	t.Setenv("DEVICE_PRIVATE_KEY_CIPHER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 
 	_, err := Load()
 	if err == nil {
@@ -91,7 +98,32 @@ func TestLoadRequiresDatabaseConfiguration(t *testing.T) {
 
 func TestLoadRejectsInvalidDuration(t *testing.T) {
 	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("DEVICE_PRIVATE_KEY_CIPHER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	t.Setenv("HTTP_REQUEST_TIMEOUT", "not-a-duration")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadAllowsMissingCipherKeyBeforeRuntimeWiring(t *testing.T) {
+	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("DEVICE_PRIVATE_KEY_CIPHER_KEY", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if len(cfg.Crypto.DevicePrivateKeyCipherKey) != 0 {
+		t.Fatalf("Crypto.DevicePrivateKeyCipherKey length = %d, want %d", len(cfg.Crypto.DevicePrivateKeyCipherKey), 0)
+	}
+}
+
+func TestLoadRejectsInvalidCipherKey(t *testing.T) {
+	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("DEVICE_PRIVATE_KEY_CIPHER_KEY", "not-base64")
 
 	_, err := Load()
 	if err == nil {

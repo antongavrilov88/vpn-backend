@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
@@ -11,6 +12,7 @@ type Config struct {
 	AppEnv string
 	HTTP   HTTPConfig
 	DB     DBConfig
+	Crypto CryptoConfig
 }
 
 type HTTPConfig struct {
@@ -25,6 +27,10 @@ type HTTPConfig struct {
 
 type DBConfig struct {
 	URL string
+}
+
+type CryptoConfig struct {
+	DevicePrivateKeyCipherKey []byte
 }
 
 func Load() (Config, error) {
@@ -58,6 +64,11 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	cipherKey, err := getCipherKeyEnv("DEVICE_PRIVATE_KEY_CIPHER_KEY")
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		AppEnv: getEnv("APP_ENV", "development"),
 		HTTP: HTTPConfig{
@@ -71,6 +82,9 @@ func Load() (Config, error) {
 		},
 		DB: DBConfig{
 			URL: getEnv("DB_URL", buildPostgresURL()),
+		},
+		Crypto: CryptoConfig{
+			DevicePrivateKeyCipherKey: cipherKey,
 		},
 	}
 
@@ -124,4 +138,22 @@ func buildPostgresURL() string {
 			"sslmode": []string{"disable"},
 		}.Encode(),
 	}).String()
+}
+
+func getCipherKeyEnv(key string) ([]byte, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return nil, nil
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base64 for %s: %w", key, err)
+	}
+
+	if len(decoded) != 32 {
+		return nil, fmt.Errorf("%s must decode to 32 bytes", key)
+	}
+
+	return decoded, nil
 }

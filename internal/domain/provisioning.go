@@ -13,6 +13,7 @@ type KeyGenerator interface {
 
 type PrivateKeyCipher interface {
 	Encrypt(ctx context.Context, plaintext string) (string, error)
+	Decrypt(ctx context.Context, ciphertext string) (string, error)
 }
 
 type IPAllocator interface {
