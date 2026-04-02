@@ -11,6 +11,7 @@ import (
 
 	"vpn-backend/internal/app"
 	"vpn-backend/internal/config"
+	"vpn-backend/internal/domain"
 	apphttp "vpn-backend/internal/transport/http"
 )
 
@@ -46,7 +47,87 @@ func run() error {
 	server := &http.Server{
 		Addr: cfg.HTTP.Addr,
 		Handler: apphttp.NewRouter(apphttp.Dependencies{
-			HealthChecker:      application.DB,
+			HealthChecker: application.DB,
+			CreateDevice: func(ctx context.Context, userID int64, name string) (*apphttp.CreateDeviceResult, error) {
+				if application.CreateDevice == nil {
+					return nil, fmt.Errorf("create device is not configured")
+				}
+
+				result, err := application.CreateDevice.Execute(ctx, app.CreateDeviceInput{
+					UserID: userID,
+					Name:   name,
+				})
+				if err != nil {
+					return nil, err
+				}
+
+				return &apphttp.CreateDeviceResult{
+					Device:       toHTTPDevice(result.Device),
+					ClientConfig: result.ClientConfig,
+				}, nil
+			},
+			ListUserDevices: func(ctx context.Context, callerUserID int64) (*apphttp.ListUserDevicesResult, error) {
+				if application.ListUserDevices == nil {
+					return nil, fmt.Errorf("list user devices is not configured")
+				}
+
+				result, err := application.ListUserDevices.Execute(ctx, app.ListUserDevicesInput{
+					CallerUserID: callerUserID,
+					UserID:       callerUserID,
+				})
+				if err != nil {
+					return nil, err
+				}
+
+				devices := make([]apphttp.Device, 0, len(result.Devices))
+				for _, device := range result.Devices {
+					devices = append(devices, apphttp.Device{
+						ID:         device.ID,
+						Name:       device.Name,
+						AssignedIP: device.AssignedIP,
+						Status:     string(device.Status),
+						CreatedAt:  device.CreatedAt,
+						RevokedAt:  device.RevokedAt,
+					})
+				}
+
+				return &apphttp.ListUserDevicesResult{Devices: devices}, nil
+			},
+			ResendDeviceConfig: func(ctx context.Context, userID, deviceID int64) (*apphttp.ResendDeviceConfigResult, error) {
+				if application.ResendDeviceConfig == nil {
+					return nil, fmt.Errorf("resend device config is not configured")
+				}
+
+				result, err := application.ResendDeviceConfig.Execute(ctx, app.ResendDeviceConfigInput{
+					UserID:   userID,
+					DeviceID: deviceID,
+				})
+				if err != nil {
+					return nil, err
+				}
+
+				return &apphttp.ResendDeviceConfigResult{
+					Device:       toHTTPDevice(result.Device),
+					ClientConfig: result.ClientConfig,
+				}, nil
+			},
+			RevokeDevice: func(ctx context.Context, userID, deviceID int64) (*apphttp.RevokeDeviceResult, error) {
+				if application.RevokeDevice == nil {
+					return nil, fmt.Errorf("revoke device is not configured")
+				}
+
+				result, err := application.RevokeDevice.Execute(ctx, app.RevokeDeviceInput{
+					UserID:   userID,
+					DeviceID: deviceID,
+				})
+				if err != nil {
+					return nil, err
+				}
+
+				return &apphttp.RevokeDeviceResult{
+					Device: toHTTPDevice(result.Device),
+				}, nil
+			},
 			RequestTimeout:     cfg.HTTP.RequestTimeout,
 			ReadinessTimeout:   cfg.HTTP.ReadinessTimeout,
 			ReadinessRoutePath: "/ready",
@@ -93,5 +174,16 @@ func run() error {
 		}
 
 		return nil
+	}
+}
+
+func toHTTPDevice(device *domain.Device) apphttp.Device {
+	return apphttp.Device{
+		ID:         device.ID,
+		Name:       device.Name,
+		AssignedIP: device.AssignedIP,
+		Status:     string(device.Status),
+		CreatedAt:  device.CreatedAt,
+		RevokedAt:  device.RevokedAt,
 	}
 }
