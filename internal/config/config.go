@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,7 @@ type Config struct {
 	HTTP   HTTPConfig
 	DB     DBConfig
 	Crypto CryptoConfig
+	Proxy  ProxyConfig
 }
 
 type HTTPConfig struct {
@@ -31,6 +33,18 @@ type DBConfig struct {
 
 type CryptoConfig struct {
 	DevicePrivateKeyCipherKey []byte
+}
+
+type ProxyConfig struct {
+	Host                     string
+	Port                     int
+	User                     string
+	PrivateKeyPath           string
+	KnownHostsPath           string
+	InsecureSkipHostKeyCheck bool
+	AddPeerCommand           string
+	RemovePeerCommand        string
+	Timeout                  time.Duration
 }
 
 func Load() (Config, error) {
@@ -64,6 +78,16 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	proxyTimeout, err := getDurationEnv("PROXY_SSH_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+
+	insecureSkipHostKeyCheck, err := getBoolEnv("PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", false)
+	if err != nil {
+		return Config{}, err
+	}
+
 	cipherKey, err := getCipherKeyEnv("DEVICE_PRIVATE_KEY_CIPHER_KEY")
 	if err != nil {
 		return Config{}, err
@@ -85,6 +109,17 @@ func Load() (Config, error) {
 		},
 		Crypto: CryptoConfig{
 			DevicePrivateKeyCipherKey: cipherKey,
+		},
+		Proxy: ProxyConfig{
+			Host:                     getEnv("PROXY_SSH_HOST", ""),
+			Port:                     getIntEnv("PROXY_SSH_PORT", 22),
+			User:                     getEnv("PROXY_SSH_USER", ""),
+			PrivateKeyPath:           getEnv("PROXY_SSH_PRIVATE_KEY_PATH", ""),
+			KnownHostsPath:           getEnv("PROXY_SSH_KNOWN_HOSTS_PATH", ""),
+			InsecureSkipHostKeyCheck: insecureSkipHostKeyCheck,
+			AddPeerCommand:           getEnv("PROXY_ADD_PEER_COMMAND", "sudo /usr/local/bin/vpn-peer-add"),
+			RemovePeerCommand:        getEnv("PROXY_REMOVE_PEER_COMMAND", "sudo /usr/local/bin/vpn-peer-remove"),
+			Timeout:                  proxyTimeout,
 		},
 	}
 
@@ -116,6 +151,36 @@ func getDurationEnv(key string, fallback time.Duration) (time.Duration, error) {
 	}
 
 	return duration, nil
+}
+
+func getIntEnv(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+
+	var parsed int
+	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil {
+		return fallback
+	}
+
+	return parsed
+}
+
+func getBoolEnv(key string, fallback bool) (bool, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid boolean for %s", key)
+	}
 }
 
 func buildPostgresURL() string {
