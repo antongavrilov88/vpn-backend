@@ -54,17 +54,9 @@ func NewCreateDeviceUseCase(
 }
 
 func (uc *CreateDeviceUseCase) Execute(ctx context.Context, input CreateDeviceInput) (*CreateDeviceResult, error) {
-	user, err := uc.userRepository.GetByID(ctx, input.UserID)
+	_, err := loadAccessibleUser(ctx, uc.userRepository, input.UserID)
 	if err != nil {
 		return nil, err
-	}
-
-	if user.Status == domain.UserStatusBlocked {
-		return nil, domain.ErrUserBlocked
-	}
-
-	if user.Status == domain.UserStatusDeleted {
-		return nil, domain.ErrUserDeleted
 	}
 
 	if uc.subscriptionRepository != nil {

@@ -22,6 +22,7 @@ type App struct {
 	DB                 *pgxpool.Pool
 	CreateDevice       *CreateDeviceUseCase
 	ResendDeviceConfig *ResendDeviceConfigUseCase
+	RevokeDevice       *RevokeDeviceUseCase
 }
 
 func New(ctx context.Context, cfg config.Config) (*App, error) {
@@ -46,6 +47,11 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
+	revokeDevice, err := newRevokeDeviceUseCase(cfg, db)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	return &App{
 		Config:             cfg,
@@ -53,6 +59,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		DB:                 db,
 		CreateDevice:       createDevice,
 		ResendDeviceConfig: resendDeviceConfig,
+		RevokeDevice:       revokeDevice,
 	}, nil
 }
 
@@ -166,6 +173,48 @@ func newResendDeviceConfigUseCase(cfg config.Config, db *pgxpool.Pool) (*ResendD
 		deviceRepository,
 		privateKeyCipher,
 		clientConfigBuilder,
+	), nil
+}
+
+func newRevokeDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*RevokeDeviceUseCase, error) {
+	requiredSettings := []requiredSetting{
+		{name: "PROXY_SSH_HOST", present: cfg.Proxy.Host != ""},
+		{name: "PROXY_SSH_USER", present: cfg.Proxy.User != ""},
+		{name: "PROXY_SSH_PRIVATE_KEY_PATH", present: cfg.Proxy.PrivateKeyPath != ""},
+		{name: "PROXY_REMOVE_PEER_COMMAND", present: cfg.Proxy.RemovePeerCommand != ""},
+		{name: "PROXY_SSH_KNOWN_HOSTS_PATH or PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", present: cfg.Proxy.KnownHostsPath != "" || cfg.Proxy.InsecureSkipHostKeyCheck},
+	}
+
+	if !hasAny(requiredSettings) {
+		return nil, nil
+	}
+
+	if missing := missingSettings(requiredSettings); len(missing) > 0 {
+		return nil, fmt.Errorf("incomplete revoke device transport config: missing %s", strings.Join(missing, ", "))
+	}
+
+	userRepository := postgres.NewUserRepository(db)
+	deviceRepository := postgres.NewDeviceRepository(db)
+
+	transport, err := proxy.NewTransport(proxy.Config{
+		Host:                     cfg.Proxy.Host,
+		Port:                     cfg.Proxy.Port,
+		User:                     cfg.Proxy.User,
+		PrivateKeyPath:           cfg.Proxy.PrivateKeyPath,
+		KnownHostsPath:           cfg.Proxy.KnownHostsPath,
+		InsecureSkipHostKeyCheck: cfg.Proxy.InsecureSkipHostKeyCheck,
+		AddPeerCommand:           cfg.Proxy.AddPeerCommand,
+		RemovePeerCommand:        cfg.Proxy.RemovePeerCommand,
+		Timeout:                  cfg.Proxy.Timeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create vpn transport: %w", err)
+	}
+
+	return NewRevokeDeviceUseCase(
+		userRepository,
+		deviceRepository,
+		transport,
 	), nil
 }
 
