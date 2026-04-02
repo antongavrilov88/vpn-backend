@@ -230,3 +230,64 @@ func TestLoadRejectsInvalidCipherKey(t *testing.T) {
 		t.Fatal("Load() error = nil, want error")
 	}
 }
+
+func TestLoadBot(t *testing.T) {
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
+	t.Setenv("TELEGRAM_POLL_TIMEOUT", "31s")
+	t.Setenv("BACKEND_API_BASE_URL", "http://localhost:8080")
+	t.Setenv("BACKEND_API_TIMEOUT", "6s")
+
+	cfg, err := LoadBot()
+	if err != nil {
+		t.Fatalf("LoadBot() error = %v", err)
+	}
+
+	if cfg.AppEnv != "test" {
+		t.Fatalf("AppEnv = %q, want %q", cfg.AppEnv, "test")
+	}
+
+	if cfg.Bot.Token != "telegram-token" {
+		t.Fatalf("Bot.Token = %q, want %q", cfg.Bot.Token, "telegram-token")
+	}
+
+	if cfg.Bot.PollTimeout != 31*time.Second {
+		t.Fatalf("Bot.PollTimeout = %v, want %v", cfg.Bot.PollTimeout, 31*time.Second)
+	}
+
+	if cfg.BackendAPI.BaseURL != "http://localhost:8080" {
+		t.Fatalf("BackendAPI.BaseURL = %q, want %q", cfg.BackendAPI.BaseURL, "http://localhost:8080")
+	}
+
+	if cfg.BackendAPI.Timeout != 6*time.Second {
+		t.Fatalf("BackendAPI.Timeout = %v, want %v", cfg.BackendAPI.Timeout, 6*time.Second)
+	}
+}
+
+func TestLoadBotRequiresTelegramToken(t *testing.T) {
+	t.Setenv("BACKEND_API_BASE_URL", "http://localhost:8080")
+
+	_, err := LoadBot()
+	if err == nil {
+		t.Fatal("LoadBot() error = nil, want error")
+	}
+}
+
+func TestLoadBotRequiresBackendAPIBaseURL(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
+
+	_, err := LoadBot()
+	if err == nil {
+		t.Fatal("LoadBot() error = nil, want error")
+	}
+}
+
+func TestLoadBotRejectsInvalidBackendAPIBaseURL(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "telegram-token")
+	t.Setenv("BACKEND_API_BASE_URL", "localhost:18080")
+
+	_, err := LoadBot()
+	if err == nil {
+		t.Fatal("LoadBot() error = nil, want error")
+	}
+}

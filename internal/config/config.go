@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -16,6 +17,12 @@ type Config struct {
 	Crypto CryptoConfig
 	VPN    VPNConfig
 	Proxy  ProxyConfig
+}
+
+type BotProcessConfig struct {
+	AppEnv     string
+	Bot        TelegramBotConfig
+	BackendAPI BackendAPIConfig
 }
 
 type HTTPConfig struct {
@@ -54,6 +61,16 @@ type ProxyConfig struct {
 	AddPeerCommand           string
 	RemovePeerCommand        string
 	Timeout                  time.Duration
+}
+
+type TelegramBotConfig struct {
+	Token       string
+	PollTimeout time.Duration
+}
+
+type BackendAPIConfig struct {
+	BaseURL string
+	Timeout time.Duration
 }
 
 func Load() (Config, error) {
@@ -146,6 +163,44 @@ func Load() (Config, error) {
 
 	if cfg.DB.URL == "" {
 		return Config{}, fmt.Errorf("DB_URL or POSTGRES_HOST/POSTGRES_PORT/POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD is required")
+	}
+
+	return cfg, nil
+}
+
+func LoadBot() (BotProcessConfig, error) {
+	pollTimeout, err := getDurationEnv("TELEGRAM_POLL_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return BotProcessConfig{}, err
+	}
+
+	backendTimeout, err := getDurationEnv("BACKEND_API_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return BotProcessConfig{}, err
+	}
+
+	cfg := BotProcessConfig{
+		AppEnv: getEnv("APP_ENV", "development"),
+		Bot: TelegramBotConfig{
+			Token:       getEnv("TELEGRAM_BOT_TOKEN", ""),
+			PollTimeout: pollTimeout,
+		},
+		BackendAPI: BackendAPIConfig{
+			BaseURL: getEnv("BACKEND_API_BASE_URL", ""),
+			Timeout: backendTimeout,
+		},
+	}
+
+	if cfg.Bot.Token == "" {
+		return BotProcessConfig{}, fmt.Errorf("TELEGRAM_BOT_TOKEN is required")
+	}
+
+	if cfg.BackendAPI.BaseURL == "" {
+		return BotProcessConfig{}, fmt.Errorf("BACKEND_API_BASE_URL is required")
+	}
+
+	if err := validateAbsoluteURL(cfg.BackendAPI.BaseURL); err != nil {
+		return BotProcessConfig{}, fmt.Errorf("invalid BACKEND_API_BASE_URL: %w", err)
 	}
 
 	return cfg, nil
@@ -258,6 +313,34 @@ func buildPostgresURL() string {
 			"sslmode": []string{"disable"},
 		}.Encode(),
 	}).String()
+}
+
+func validateAbsoluteURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("scheme must be http or https")
+	}
+
+	if parsed.Host == "" {
+		return fmt.Errorf("host is required")
+	}
+
+	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("host is required")
+	}
+
+	if port := parsed.Port(); port != "" {
+		if _, err := net.LookupPort("tcp", port); err != nil {
+			return fmt.Errorf("invalid port")
+		}
+	}
+
+	return nil
 }
 
 func getCipherKeyEnv(key string) ([]byte, error) {

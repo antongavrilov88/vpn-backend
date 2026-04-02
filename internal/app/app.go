@@ -187,16 +187,22 @@ func newListUserDevicesUseCase(db *pgxpool.Pool) *ListUserDevicesUseCase {
 }
 
 func newRevokeDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*RevokeDeviceUseCase, error) {
+	activationSettings := []requiredSetting{
+		{name: "PROXY_SSH_HOST", present: cfg.Proxy.Host != ""},
+		{name: "PROXY_SSH_USER", present: cfg.Proxy.User != ""},
+		{name: "PROXY_SSH_PRIVATE_KEY_PATH", present: cfg.Proxy.PrivateKeyPath != ""},
+	}
+
+	if !hasAny(activationSettings) {
+		return nil, nil
+	}
+
 	requiredSettings := []requiredSetting{
 		{name: "PROXY_SSH_HOST", present: cfg.Proxy.Host != ""},
 		{name: "PROXY_SSH_USER", present: cfg.Proxy.User != ""},
 		{name: "PROXY_SSH_PRIVATE_KEY_PATH", present: cfg.Proxy.PrivateKeyPath != ""},
 		{name: "PROXY_REMOVE_PEER_COMMAND", present: cfg.Proxy.RemovePeerCommand != ""},
 		{name: "PROXY_SSH_KNOWN_HOSTS_PATH or PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", present: cfg.Proxy.KnownHostsPath != "" || cfg.Proxy.InsecureSkipHostKeyCheck},
-	}
-
-	if !hasAny(requiredSettings) {
-		return nil, nil
 	}
 
 	if missing := missingSettings(requiredSettings); len(missing) > 0 {
