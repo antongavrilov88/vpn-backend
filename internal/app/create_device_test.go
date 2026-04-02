@@ -253,6 +253,10 @@ type fakeDeviceRepository struct {
 	createResult      *domain.Device
 	createdDevice     *domain.Device
 	createCalls       int
+	updateErr         error
+	updateResult      *domain.Device
+	updatedDevice     *domain.Device
+	updateCalls       int
 }
 
 func (f *fakeDeviceRepository) GetByID(context.Context, int64) (*domain.Device, error) {
@@ -282,8 +286,17 @@ func (f *fakeDeviceRepository) Create(_ context.Context, device domain.Device) (
 	return f.createResult, nil
 }
 
-func (f *fakeDeviceRepository) Update(context.Context, domain.Device) (*domain.Device, error) {
-	return nil, nil
+func (f *fakeDeviceRepository) Update(_ context.Context, device domain.Device) (*domain.Device, error) {
+	if f.callLog != nil {
+		*f.callLog = append(*f.callLog, "device.update")
+	}
+	f.updateCalls++
+	deviceCopy := device
+	f.updatedDevice = &deviceCopy
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	return f.updateResult, nil
 }
 
 type fakeVPNTransport struct {
