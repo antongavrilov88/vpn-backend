@@ -17,6 +17,11 @@ func TestLoad(t *testing.T) {
 	t.Setenv("PROXY_SSH_TIMEOUT", "7s")
 	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
 	t.Setenv("DEVICE_PRIVATE_KEY_CIPHER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	t.Setenv("VPN_SERVER_PUBLIC_KEY", "server-public-key")
+	t.Setenv("VPN_SERVER_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("VPN_ALLOWED_IPS", "0.0.0.0/0, ::/0")
+	t.Setenv("VPN_DNS", "1.1.1.1,8.8.8.8")
+	t.Setenv("VPN_PERSISTENT_KEEPALIVE", "25")
 	t.Setenv("PROXY_SSH_HOST", "proxy.internal")
 	t.Setenv("PROXY_SSH_PORT", "2222")
 	t.Setenv("PROXY_SSH_USER", "deploy")
@@ -69,6 +74,26 @@ func TestLoad(t *testing.T) {
 
 	if len(cfg.Crypto.DevicePrivateKeyCipherKey) != 32 {
 		t.Fatalf("Crypto.DevicePrivateKeyCipherKey length = %d, want %d", len(cfg.Crypto.DevicePrivateKeyCipherKey), 32)
+	}
+
+	if cfg.VPN.ServerPublicKey != "server-public-key" {
+		t.Fatalf("VPN.ServerPublicKey = %q, want %q", cfg.VPN.ServerPublicKey, "server-public-key")
+	}
+
+	if cfg.VPN.Endpoint != "vpn.example.com:51820" {
+		t.Fatalf("VPN.Endpoint = %q, want %q", cfg.VPN.Endpoint, "vpn.example.com:51820")
+	}
+
+	if len(cfg.VPN.AllowedIPs) != 2 || cfg.VPN.AllowedIPs[0] != "0.0.0.0/0" || cfg.VPN.AllowedIPs[1] != "::/0" {
+		t.Fatalf("VPN.AllowedIPs = %#v, want expected values", cfg.VPN.AllowedIPs)
+	}
+
+	if len(cfg.VPN.DNS) != 2 || cfg.VPN.DNS[0] != "1.1.1.1" || cfg.VPN.DNS[1] != "8.8.8.8" {
+		t.Fatalf("VPN.DNS = %#v, want expected values", cfg.VPN.DNS)
+	}
+
+	if cfg.VPN.PersistentKeepalive == nil || *cfg.VPN.PersistentKeepalive != 25 {
+		t.Fatalf("VPN.PersistentKeepalive = %#v, want 25", cfg.VPN.PersistentKeepalive)
 	}
 
 	if cfg.Proxy.Host != "proxy.internal" {
@@ -165,6 +190,16 @@ func TestLoadRejectsInvalidProxyTimeout(t *testing.T) {
 func TestLoadRejectsInvalidProxyHostKeyCheckFlag(t *testing.T) {
 	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
 	t.Setenv("PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", "maybe")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadRejectsInvalidPersistentKeepalive(t *testing.T) {
+	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("VPN_PERSISTENT_KEEPALIVE", "not-an-int")
 
 	_, err := Load()
 	if err == nil {

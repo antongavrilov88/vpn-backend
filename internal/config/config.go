@@ -14,6 +14,7 @@ type Config struct {
 	HTTP   HTTPConfig
 	DB     DBConfig
 	Crypto CryptoConfig
+	VPN    VPNConfig
 	Proxy  ProxyConfig
 }
 
@@ -33,6 +34,14 @@ type DBConfig struct {
 
 type CryptoConfig struct {
 	DevicePrivateKeyCipherKey []byte
+}
+
+type VPNConfig struct {
+	ServerPublicKey     string
+	Endpoint            string
+	AllowedIPs          []string
+	DNS                 []string
+	PersistentKeepalive *int
 }
 
 type ProxyConfig struct {
@@ -93,6 +102,11 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	persistentKeepalive, err := getOptionalIntEnv("VPN_PERSISTENT_KEEPALIVE")
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		AppEnv: getEnv("APP_ENV", "development"),
 		HTTP: HTTPConfig{
@@ -109,6 +123,13 @@ func Load() (Config, error) {
 		},
 		Crypto: CryptoConfig{
 			DevicePrivateKeyCipherKey: cipherKey,
+		},
+		VPN: VPNConfig{
+			ServerPublicKey:     getEnv("VPN_SERVER_PUBLIC_KEY", ""),
+			Endpoint:            getEnv("VPN_SERVER_ENDPOINT", ""),
+			AllowedIPs:          getListEnv("VPN_ALLOWED_IPS"),
+			DNS:                 getListEnv("VPN_DNS"),
+			PersistentKeepalive: persistentKeepalive,
 		},
 		Proxy: ProxyConfig{
 			Host:                     getEnv("PROXY_SSH_HOST", ""),
@@ -167,6 +188,20 @@ func getIntEnv(key string, fallback int) int {
 	return parsed
 }
 
+func getOptionalIntEnv(key string) (*int, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return nil, nil
+	}
+
+	var parsed int
+	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil {
+		return nil, fmt.Errorf("invalid integer for %s", key)
+	}
+
+	return &parsed, nil
+}
+
 func getBoolEnv(key string, fallback bool) (bool, error) {
 	value := os.Getenv(key)
 	if value == "" {
@@ -181,6 +216,26 @@ func getBoolEnv(key string, fallback bool) (bool, error) {
 	default:
 		return false, fmt.Errorf("invalid boolean for %s", key)
 	}
+}
+
+func getListEnv(key string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		return nil
+	}
+
+	parts := strings.Split(value, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+
+		values = append(values, trimmed)
+	}
+
+	return values
 }
 
 func buildPostgresURL() string {

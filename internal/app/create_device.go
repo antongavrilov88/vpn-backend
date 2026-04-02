@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"vpn-backend/internal/domain"
 )
@@ -91,71 +90,53 @@ func (uc *CreateDeviceUseCase) Execute(ctx context.Context, input CreateDeviceIn
 	if !errors.Is(err, domain.ErrNotFound) {
 		return nil, err
 	}
-
-	encryptedPrivateKey, err := uc.privateKeyCipher.Encrypt(ctx, keyPair.PrivateKey)
-	if err != nil {
-		return nil, err
-	}
-
-	device := domain.Device{
-		UserID:              input.UserID,
-		Name:                input.Name,
-		PublicKey:           keyPair.PublicKey,
-		EncryptedPrivateKey: encryptedPrivateKey,
-		Status:              domain.DeviceStatusActive,
-	}
-
-	createdDevice, err := uc.createDeviceRecord(ctx, device)
-	if err != nil {
-		return nil, err
-	}
-
-	peerInput := domain.CreatePeerInput{
-		PublicKey:  createdDevice.PublicKey,
-		AssignedIP: createdDevice.AssignedIP,
-	}
-
-	if _, err := uc.transport.CreatePeer(ctx, peerInput); err != nil {
-		uc.revokeDeviceOnFailure(ctx, createdDevice)
-
-		return nil, err
-	}
-
-	clientConfig, err := uc.clientConfigBuilder.Build(ctx, domain.BuildClientConfigInput{
-		DeviceName:       input.Name,
-		ClientPrivateKey: keyPair.PrivateKey,
-		ClientAddress:    createdDevice.AssignedIP,
-	})
-	if err != nil {
-		_ = uc.transport.RemovePeer(ctx, domain.RemovePeerInput{
-			PublicKey:  createdDevice.PublicKey,
-			AssignedIP: createdDevice.AssignedIP,
-		})
-		uc.revokeDeviceOnFailure(ctx, createdDevice)
-
-		return nil, err
-	}
-
-	return &CreateDeviceResult{
-		Device:       createdDevice,
-		ClientConfig: clientConfig,
-	}, nil
-}
-
-func (uc *CreateDeviceUseCase) createDeviceRecord(ctx context.Context, device domain.Device) (*domain.Device, error) {
 	for attempt := 0; attempt < maxCreateDeviceAttempts; attempt++ {
 		assignedIP, err := uc.ipAllocator.AllocateNext(ctx)
 		if err != nil {
 			return nil, err
 		}
 
-		device.AssignedIP = assignedIP
+		peerInput := domain.CreatePeerInput{
+			PublicKey:  keyPair.PublicKey,
+			AssignedIP: assignedIP,
+		}
+
+		if _, err := uc.transport.CreatePeer(ctx, peerInput); err != nil {
+			return nil, err
+		}
+
+		clientConfig, err := uc.clientConfigBuilder.Build(ctx, domain.BuildClientConfigInput{
+			DeviceName:       input.Name,
+			ClientPrivateKey: keyPair.PrivateKey,
+			ClientAddress:    assignedIP,
+		})
+		if err != nil {
+			return nil, uc.cleanupPeerFailure(ctx, peerInput, err)
+		}
+
+		encryptedPrivateKey, err := uc.privateKeyCipher.Encrypt(ctx, keyPair.PrivateKey)
+		if err != nil {
+			return nil, uc.cleanupPeerFailure(ctx, peerInput, err)
+		}
+
+		device := domain.Device{
+			UserID:              input.UserID,
+			Name:                input.Name,
+			PublicKey:           keyPair.PublicKey,
+			EncryptedPrivateKey: encryptedPrivateKey,
+			AssignedIP:          assignedIP,
+			Status:              domain.DeviceStatusActive,
+		}
 
 		createdDevice, err := uc.deviceRepository.Create(ctx, device)
 		if err == nil {
-			return createdDevice, nil
+			return &CreateDeviceResult{
+				Device:       createdDevice,
+				ClientConfig: clientConfig,
+			}, nil
 		}
 
+		err = uc.cleanupPeerFailure(ctx, peerInput, err)
 		if !errors.Is(err, domain.ErrConflict) {
 			return nil, err
 		}
@@ -164,12 +145,13 @@ func (uc *CreateDeviceUseCase) createDeviceRecord(ctx context.Context, device do
 	return nil, domain.ErrConflict
 }
 
-func (uc *CreateDeviceUseCase) revokeDeviceOnFailure(ctx context.Context, device *domain.Device) {
-	revokedAt := time.Now().UTC()
-	device.Status = domain.DeviceStatusRevoked
-	device.RevokedAt = &revokedAt
-
-	if _, err := uc.deviceRepository.Update(ctx, *device); err != nil {
-		return
+func (uc *CreateDeviceUseCase) cleanupPeerFailure(ctx context.Context, input domain.CreatePeerInput, cause error) error {
+	if err := uc.transport.RemovePeer(ctx, domain.RemovePeerInput{
+		PublicKey:  input.PublicKey,
+		AssignedIP: input.AssignedIP,
+	}); err != nil {
+		return fmt.Errorf("%w: remove peer compensation failed: %v", cause, err)
 	}
+
+	return cause
 }
