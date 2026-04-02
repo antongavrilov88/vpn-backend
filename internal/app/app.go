@@ -21,6 +21,7 @@ type App struct {
 	Logger             *slog.Logger
 	DB                 *pgxpool.Pool
 	CreateDevice       *CreateDeviceUseCase
+	ListUserDevices    *ListUserDevicesUseCase
 	ResendDeviceConfig *ResendDeviceConfigUseCase
 	RevokeDevice       *RevokeDeviceUseCase
 }
@@ -42,6 +43,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
+	listUserDevices := newListUserDevicesUseCase(db)
 	resendDeviceConfig, err := newResendDeviceConfigUseCase(cfg, db)
 	if err != nil {
 		db.Close()
@@ -58,6 +60,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		Logger:             log,
 		DB:                 db,
 		CreateDevice:       createDevice,
+		ListUserDevices:    listUserDevices,
 		ResendDeviceConfig: resendDeviceConfig,
 		RevokeDevice:       revokeDevice,
 	}, nil
@@ -174,6 +177,13 @@ func newResendDeviceConfigUseCase(cfg config.Config, db *pgxpool.Pool) (*ResendD
 		privateKeyCipher,
 		clientConfigBuilder,
 	), nil
+}
+
+func newListUserDevicesUseCase(db *pgxpool.Pool) *ListUserDevicesUseCase {
+	return NewListUserDevicesUseCase(
+		postgres.NewUserRepository(db),
+		postgres.NewDeviceRepository(db),
+	)
 }
 
 func newRevokeDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*RevokeDeviceUseCase, error) {
