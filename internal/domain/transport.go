@@ -8,7 +8,6 @@ import (
 type VPNTransport interface {
 	CreatePeer(ctx context.Context, input CreatePeerInput) (*Peer, error)
 	RemovePeer(ctx context.Context, input RemovePeerInput) error
-	BuildClientConfig(ctx context.Context, input BuildClientConfigInput) (string, error)
 	GetPeerStatus(ctx context.Context, input GetPeerStatusInput) (*PeerStatus, error)
 	Reconcile(ctx context.Context, input ReconcileInput) (*ReconcileResult, error)
 }
@@ -21,12 +20,6 @@ type CreatePeerInput struct {
 type RemovePeerInput struct {
 	PublicKey  string
 	AssignedIP string
-}
-
-type BuildClientConfigInput struct {
-	DeviceName       string
-	ClientPrivateKey string
-	ClientAddress    string
 }
 
 type GetPeerStatusInput struct {

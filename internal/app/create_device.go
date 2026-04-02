@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"vpn-backend/internal/domain"
@@ -18,6 +19,7 @@ type CreateDeviceUseCase struct {
 	keyGenerator           domain.KeyGenerator
 	privateKeyCipher       domain.PrivateKeyCipher
 	ipAllocator            domain.IPAllocator
+	clientConfigBuilder    domain.ClientConfigBuilder
 }
 
 type CreateDeviceInput struct {
@@ -38,6 +40,7 @@ func NewCreateDeviceUseCase(
 	keyGenerator domain.KeyGenerator,
 	privateKeyCipher domain.PrivateKeyCipher,
 	ipAllocator domain.IPAllocator,
+	clientConfigBuilder domain.ClientConfigBuilder,
 ) *CreateDeviceUseCase {
 	return &CreateDeviceUseCase{
 		userRepository:         userRepository,
@@ -47,6 +50,7 @@ func NewCreateDeviceUseCase(
 		keyGenerator:           keyGenerator,
 		privateKeyCipher:       privateKeyCipher,
 		ipAllocator:            ipAllocator,
+		clientConfigBuilder:    clientConfigBuilder,
 	}
 }
 
@@ -68,6 +72,10 @@ func (uc *CreateDeviceUseCase) Execute(ctx context.Context, input CreateDeviceIn
 		if _, err := uc.subscriptionRepository.GetActiveByUserID(ctx, input.UserID); err != nil {
 			return nil, err
 		}
+	}
+
+	if uc.clientConfigBuilder == nil {
+		return nil, fmt.Errorf("client config builder is not configured")
 	}
 
 	keyPair, err := uc.keyGenerator.Generate()
@@ -113,7 +121,7 @@ func (uc *CreateDeviceUseCase) Execute(ctx context.Context, input CreateDeviceIn
 		return nil, err
 	}
 
-	clientConfig, err := uc.transport.BuildClientConfig(ctx, domain.BuildClientConfigInput{
+	clientConfig, err := uc.clientConfigBuilder.Build(ctx, domain.BuildClientConfigInput{
 		DeviceName:       input.Name,
 		ClientPrivateKey: keyPair.PrivateKey,
 		ClientAddress:    createdDevice.AssignedIP,

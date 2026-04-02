@@ -19,3 +19,13 @@ type PrivateKeyCipher interface {
 type IPAllocator interface {
 	AllocateNext(ctx context.Context) (string, error)
 }
+
+type ClientConfigBuilder interface {
+	Build(ctx context.Context, input BuildClientConfigInput) (string, error)
+}
+
+type BuildClientConfigInput struct {
+	DeviceName       string
+	ClientPrivateKey string
+	ClientAddress    string
+}
