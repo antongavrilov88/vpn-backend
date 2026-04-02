@@ -14,7 +14,7 @@ MIGRATIONS_DIR := migrations
 GO := env GOCACHE=$(CURDIR)/.cache/go-build go
 GOOSE := $(GO) tool goose
 
-.PHONY: db-up db-down db-logs migrate-create migrate-up migrate-down migrate-status
+.PHONY: db-up db-down db-logs migrate-create migrate-up migrate-down migrate-status api-run bot-run
 
 db-up:
 	docker compose up -d postgres
@@ -51,3 +51,9 @@ migrate-status:
 	else \
 		echo "no migration files found in $(MIGRATIONS_DIR)"; \
 	fi
+
+api-run:
+	$(GO) run ./cmd/api
+
+bot-run:
+	$(GO) run ./cmd/bot
