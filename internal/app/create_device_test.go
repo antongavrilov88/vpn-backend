@@ -228,7 +228,9 @@ type fakeUserRepository struct {
 }
 
 func (f *fakeUserRepository) GetByID(context.Context, int64) (*domain.User, error) {
-	*f.callLog = append(*f.callLog, "user.get_by_id")
+	if f.callLog != nil {
+		*f.callLog = append(*f.callLog, "user.get_by_id")
+	}
 	return f.user, f.err
 }
 
@@ -249,6 +251,8 @@ type fakeDeviceRepository struct {
 	getByIDDevice     *domain.Device
 	getByIDErr        error
 	getByPublicKeyErr error
+	listByUserID      []domain.Device
+	listByUserIDErr   error
 	createErr         error
 	createResult      *domain.Device
 	createdDevice     *domain.Device
@@ -272,7 +276,10 @@ func (f *fakeDeviceRepository) GetByPublicKey(context.Context, string) (*domain.
 }
 
 func (f *fakeDeviceRepository) ListByUserID(context.Context, int64) ([]domain.Device, error) {
-	return nil, nil
+	if f.callLog != nil {
+		*f.callLog = append(*f.callLog, "device.list_by_user_id")
+	}
+	return f.listByUserID, f.listByUserIDErr
 }
 
 func (f *fakeDeviceRepository) Create(_ context.Context, device domain.Device) (*domain.Device, error) {
