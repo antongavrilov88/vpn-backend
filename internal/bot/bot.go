@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -32,6 +33,7 @@ type backendClient interface {
 	backendapi.HealthChecker
 	ListDevices(ctx context.Context, telegramUserID int64) (*backendapi.ListDevicesResult, error)
 	CreateDevice(ctx context.Context, telegramUserID int64, name string) (*backendapi.CreateDeviceResult, error)
+	ResendDeviceConfig(ctx context.Context, telegramUserID, deviceID int64) (*backendapi.ResendDeviceConfigResult, error)
 }
 
 func New(logger *slog.Logger, telegramClient telegramClient, backendClient backendClient, pollTimeout time.Duration) *Bot {
@@ -98,6 +100,8 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) erro
 		return b.handleDevices(ctx, message)
 	case "/newdevice":
 		return b.handleNewDevice(ctx, message, strings.TrimSpace(strings.TrimPrefix(message.Text, fields[0])))
+	case "/config":
+		return b.handleConfig(ctx, message, strings.TrimSpace(strings.TrimPrefix(message.Text, fields[0])))
 	default:
 		return nil
 	}
@@ -113,7 +117,7 @@ func (b *Bot) startMessage(ctx context.Context) string {
 }
 
 func helpMessage() string {
-	return "Available commands:\n/start - show welcome message\n/help - show this help\n/devices - show your devices\n/newdevice <device_name> - create a new device"
+	return "Available commands:\n/start - show welcome message\n/help - show this help\n/devices - show your devices\n/newdevice <device_name> - create a new device\n/config <device_id> - resend config for a device"
 }
 
 func (b *Bot) checkBackend(ctx context.Context) error {
@@ -161,6 +165,25 @@ func (b *Bot) handleNewDevice(ctx context.Context, message *telegram.Message, ra
 	}
 
 	return b.telegram.SendMessage(ctx, message.Chat.ID, formatCreateDeviceMessage(result))
+}
+
+func (b *Bot) handleConfig(ctx context.Context, message *telegram.Message, rawDeviceID string) error {
+	if message.From == nil {
+		return b.telegram.SendMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
+	}
+
+	deviceID, validationMessage := parseDeviceID(rawDeviceID, "/config <device_id>")
+	if validationMessage != "" {
+		return b.telegram.SendMessage(ctx, message.Chat.ID, validationMessage)
+	}
+
+	result, err := b.backend.ResendDeviceConfig(ctx, message.From.ID, deviceID)
+	if err != nil {
+		b.logger.Error("resend device config via backend", "telegram_user_id", message.From.ID, "device_id", deviceID, "error", err)
+		return b.telegram.SendMessage(ctx, message.Chat.ID, formatResendDeviceConfigError(err))
+	}
+
+	return b.telegram.SendMessage(ctx, message.Chat.ID, formatResendDeviceConfigMessage(result))
 }
 
 func formatDevicesMessage(result *backendapi.ListDevicesResult) string {
@@ -230,6 +253,45 @@ func formatCreateDeviceError(err error) string {
 	return "Failed to create the device right now. Please try again later."
 }
 
+func formatResendDeviceConfigMessage(result *backendapi.ResendDeviceConfigResult) string {
+	if result == nil {
+		return "Device config rebuilt."
+	}
+
+	lines := []string{"Device config rebuilt successfully."}
+	if result.Device.Name != "" {
+		lines = append(lines, fmt.Sprintf("Name: %s", result.Device.Name))
+	}
+	if result.Device.AssignedIP != "" {
+		lines = append(lines, fmt.Sprintf("IP: %s", result.Device.AssignedIP))
+	}
+	if strings.TrimSpace(result.ClientConfig) != "" {
+		lines = append(lines, "", "Client config:", result.ClientConfig)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func formatResendDeviceConfigError(err error) string {
+	if errors.Is(err, backendapi.ErrNotFound) {
+		return "Device not found."
+	}
+
+	var apiErr *backendapi.APIError
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.StatusCode == 403:
+			return "You are not allowed to access that device config."
+		case apiErr.StatusCode == 409 && apiErr.Message != "":
+			return fmt.Sprintf("Cannot resend config: %s.", apiErr.Message)
+		default:
+			return "Failed to resend the device config right now. Please try again later."
+		}
+	}
+
+	return "Failed to resend the device config right now. Please try again later."
+}
+
 func validateDeviceName(rawName string) (string, string) {
 	name := strings.TrimSpace(rawName)
 	if name == "" {
@@ -247,4 +309,18 @@ func validateDeviceName(rawName string) (string, string) {
 	}
 
 	return name, ""
+}
+
+func parseDeviceID(rawValue, usage string) (int64, string) {
+	value := strings.TrimSpace(rawValue)
+	if value == "" {
+		return 0, "Usage: " + usage
+	}
+
+	deviceID, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || deviceID <= 0 {
+		return 0, "Device ID must be a positive number."
+	}
+
+	return deviceID, ""
 }

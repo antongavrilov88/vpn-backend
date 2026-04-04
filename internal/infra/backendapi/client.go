@@ -40,6 +40,11 @@ type CreateDeviceResult struct {
 	ClientConfig string `json:"client_config"`
 }
 
+type ResendDeviceConfigResult struct {
+	Device       Device `json:"device"`
+	ClientConfig string `json:"client_config"`
+}
+
 var ErrNotFound = errors.New("backend api not found")
 
 type APIError struct {
@@ -109,10 +114,6 @@ func (c *Client) ListDevices(ctx context.Context, telegramUserID int64) (*ListDe
 	}
 	defer response.Body.Close()
 
-	if response.StatusCode == http.StatusNotFound {
-		return nil, ErrNotFound
-	}
-
 	if response.StatusCode != http.StatusOK {
 		return nil, decodeAPIError(response.Body, response.StatusCode)
 	}
@@ -155,6 +156,35 @@ func (c *Client) CreateDevice(ctx context.Context, telegramUserID int64, name st
 	var result CreateDeviceResult
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode backend create device response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (c *Client) ResendDeviceConfig(ctx context.Context, telegramUserID, deviceID int64) (*ResendDeviceConfigResult, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/devices/"+strconv.FormatInt(deviceID, 10)+"/config", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build resend device config request: %w", err)
+	}
+	request.Header.Set("X-Telegram-ID", strconv.FormatInt(telegramUserID, 10))
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("call backend resend device config: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode == http.StatusNotFound {
+		return nil, ErrNotFound
+	}
+
+	if response.StatusCode != http.StatusOK {
+		return nil, decodeAPIError(response.Body, response.StatusCode)
+	}
+
+	var result ResendDeviceConfigResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode backend resend device config response: %w", err)
 	}
 
 	return &result, nil

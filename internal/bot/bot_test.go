@@ -206,6 +206,159 @@ func TestHandleMessageNewDeviceRejectsLongName(t *testing.T) {
 	}
 }
 
+func TestHandleMessageConfigSuccess(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		resendDeviceConfigResult: &backendapi.ResendDeviceConfigResult{
+			Device: backendapi.Device{
+				ID:         100,
+				Name:       "dad-laptop",
+				AssignedIP: "10.67.0.2",
+				Status:     "active",
+			},
+			ClientConfig: "[Interface]\nPrivateKey = private-key\n",
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/config 100",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	if backendClient.resendDeviceConfigTelegramUserID != 777 {
+		t.Fatalf("telegram user id = %d, want %d", backendClient.resendDeviceConfigTelegramUserID, 777)
+	}
+
+	if backendClient.resendDeviceConfigDeviceID != 100 {
+		t.Fatalf("device id = %d, want %d", backendClient.resendDeviceConfigDeviceID, 100)
+	}
+
+	if len(telegramClient.sentMessages) != 1 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+	}
+
+	want := "Device config rebuilt successfully.\nName: dad-laptop\nIP: 10.67.0.2\n\nClient config:\n[Interface]\nPrivateKey = private-key\n"
+	if got := telegramClient.sentMessages[0].text; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestHandleMessageConfigRequiresDeviceID(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/config",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	if backendClient.resendDeviceConfigCalls != 0 {
+		t.Fatalf("resend config calls = %d, want %d", backendClient.resendDeviceConfigCalls, 0)
+	}
+
+	if len(telegramClient.sentMessages) != 1 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+	}
+
+	if got := telegramClient.sentMessages[0].text; got != "Usage: /config <device_id>" {
+		t.Fatalf("message = %q, want usage", got)
+	}
+}
+
+func TestHandleMessageConfigRejectsInvalidDeviceID(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/config abc",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	if backendClient.resendDeviceConfigCalls != 0 {
+		t.Fatalf("resend config calls = %d, want %d", backendClient.resendDeviceConfigCalls, 0)
+	}
+
+	if len(telegramClient.sentMessages) != 1 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+	}
+
+	if got := telegramClient.sentMessages[0].text; got != "Device ID must be a positive number." {
+		t.Fatalf("message = %q, want invalid id error", got)
+	}
+}
+
+func TestHandleMessageConfigMapsBackendErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		err         error
+		wantMessage string
+	}{
+		{
+			name:        "not found",
+			err:         &backendapi.APIError{StatusCode: 404, Message: "not found"},
+			wantMessage: "Failed to resend the device config right now. Please try again later.",
+		},
+		{
+			name:        "forbidden",
+			err:         &backendapi.APIError{StatusCode: 403, Message: "forbidden"},
+			wantMessage: "You are not allowed to access that device config.",
+		},
+		{
+			name:        "revoked",
+			err:         &backendapi.APIError{StatusCode: 409, Message: "device is revoked"},
+			wantMessage: "Cannot resend config: device is revoked.",
+		},
+		{
+			name:        "other backend error",
+			err:         &backendapi.APIError{StatusCode: 500, Message: "internal error"},
+			wantMessage: "Failed to resend the device config right now. Please try again later.",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			telegramClient := &stubTelegramClient{}
+			backendClient := &stubBackendClient{resendDeviceConfigErr: test.err}
+			b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+			err := b.handleMessage(context.Background(), &telegram.Message{
+				Text: "/config 100",
+				Chat: telegram.Chat{ID: 99},
+				From: &telegram.User{ID: 777},
+			})
+			if err != nil {
+				t.Fatalf("handleMessage() error = %v", err)
+			}
+
+			if len(telegramClient.sentMessages) != 1 {
+				t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+			}
+
+			if got := telegramClient.sentMessages[0].text; got != test.wantMessage {
+				t.Fatalf("message = %q, want %q", got, test.wantMessage)
+			}
+		})
+	}
+}
+
 type stubTelegramClient struct {
 	sentMessages []sentMessage
 }
@@ -228,11 +381,16 @@ func (s *stubTelegramClient) SendMessage(_ context.Context, chatID int64, text s
 }
 
 type stubBackendClient struct {
-	createDeviceCalls          int
-	createDeviceTelegramUserID int64
-	createDeviceName           string
-	createDeviceResult         *backendapi.CreateDeviceResult
-	createDeviceErr            error
+	createDeviceCalls                int
+	createDeviceTelegramUserID       int64
+	createDeviceName                 string
+	createDeviceResult               *backendapi.CreateDeviceResult
+	createDeviceErr                  error
+	resendDeviceConfigCalls          int
+	resendDeviceConfigTelegramUserID int64
+	resendDeviceConfigDeviceID       int64
+	resendDeviceConfigResult         *backendapi.ResendDeviceConfigResult
+	resendDeviceConfigErr            error
 }
 
 func (s *stubBackendClient) Health(context.Context) error {
@@ -248,4 +406,11 @@ func (s *stubBackendClient) CreateDevice(_ context.Context, telegramUserID int64
 	s.createDeviceTelegramUserID = telegramUserID
 	s.createDeviceName = name
 	return s.createDeviceResult, s.createDeviceErr
+}
+
+func (s *stubBackendClient) ResendDeviceConfig(_ context.Context, telegramUserID, deviceID int64) (*backendapi.ResendDeviceConfigResult, error) {
+	s.resendDeviceConfigCalls++
+	s.resendDeviceConfigTelegramUserID = telegramUserID
+	s.resendDeviceConfigDeviceID = deviceID
+	return s.resendDeviceConfigResult, s.resendDeviceConfigErr
 }
