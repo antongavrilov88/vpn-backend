@@ -109,7 +109,7 @@ The backend SSH transport config is defined by these settings:
 | `PROXY_REMOVE_PEER_COMMAND` | fixed remote remove-peer command path |
 | `PROXY_SSH_TIMEOUT` | SSH connect/command timeout |
 
-Default command values:
+Recommended sample values:
 
 ```text
 PROXY_ADD_PEER_COMMAND=sudo /usr/local/bin/vpn-peer-add

@@ -8,8 +8,9 @@ POSTGRES_PORT ?= 5433
 POSTGRES_DB ?= vpn_mvp
 POSTGRES_USER ?= postgres
 POSTGRES_PASSWORD ?= postgres
+POSTGRES_SSL_MODE ?= disable
 
-DB_URL ?= postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=disable
+DB_URL ?= postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(POSTGRES_HOST):$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=$(POSTGRES_SSL_MODE)
 MIGRATIONS_DIR := migrations
 GO := env GOCACHE=$(CURDIR)/.cache/go-build go
 GOOSE := $(GO) tool goose

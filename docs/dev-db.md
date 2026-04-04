@@ -21,12 +21,15 @@ The local database uses the values from `.env`:
 | `POSTGRES_DB` | `vpn_mvp` |
 | `POSTGRES_USER` | `postgres` |
 | `POSTGRES_PASSWORD` | `postgres` |
+| `POSTGRES_SSL_MODE` | `disable` |
 
 The application can build `DB_URL` from these variables automatically. The resulting connection string is:
 
 ```text
 postgres://postgres:postgres@localhost:5433/vpn_mvp?sslmode=disable
 ```
+
+If you prefer, you can set `DB_URL` directly and skip the derived Postgres variables.
 
 ## Start The Database
 
