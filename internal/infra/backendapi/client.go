@@ -1,6 +1,7 @@
 package backendapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,7 +35,29 @@ type ListDevicesResult struct {
 	Devices []Device `json:"devices"`
 }
 
+type CreateDeviceResult struct {
+	Device       Device `json:"device"`
+	ClientConfig string `json:"client_config"`
+}
+
 var ErrNotFound = errors.New("backend api not found")
+
+type APIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	if e == nil {
+		return ""
+	}
+
+	if e.Message != "" {
+		return fmt.Sprintf("backend api status %d: %s", e.StatusCode, e.Message)
+	}
+
+	return fmt.Sprintf("backend api status %d", e.StatusCode)
+}
 
 func NewClient(baseURL string, timeout time.Duration) (*Client, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
@@ -102,6 +125,41 @@ func (c *Client) ListDevices(ctx context.Context, telegramUserID int64) (*ListDe
 	return &result, nil
 }
 
+func (c *Client) CreateDevice(ctx context.Context, telegramUserID int64, name string) (*CreateDeviceResult, error) {
+	requestBody, err := json.Marshal(struct {
+		Name string `json:"name"`
+	}{
+		Name: name,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode create device request: %w", err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/devices", bytes.NewReader(requestBody))
+	if err != nil {
+		return nil, fmt.Errorf("build create device request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Telegram-ID", strconv.FormatInt(telegramUserID, 10))
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("call backend create device: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusCreated {
+		return nil, decodeAPIError(response.Body, response.StatusCode)
+	}
+
+	var result CreateDeviceResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode backend create device response: %w", err)
+	}
+
+	return &result, nil
+}
+
 type errorResponse struct {
 	Error string `json:"error"`
 }
@@ -109,8 +167,11 @@ type errorResponse struct {
 func decodeAPIError(body io.Reader, statusCode int) error {
 	var payload errorResponse
 	if err := json.NewDecoder(body).Decode(&payload); err == nil && payload.Error != "" {
-		return fmt.Errorf("backend api status %d: %s", statusCode, payload.Error)
+		return &APIError{
+			StatusCode: statusCode,
+			Message:    payload.Error,
+		}
 	}
 
-	return fmt.Errorf("backend api status %d", statusCode)
+	return &APIError{StatusCode: statusCode}
 }
