@@ -19,20 +19,22 @@ type HealthChecker interface {
 	Ping(ctx context.Context) error
 }
 
+type ResolveTelegramUserIDFunc func(ctx context.Context, telegramUserID int64) (int64, error)
 type CreateDeviceFunc func(ctx context.Context, userID int64, name string) (*CreateDeviceResult, error)
 type ListUserDevicesFunc func(ctx context.Context, callerUserID int64) (*ListUserDevicesResult, error)
 type ResendDeviceConfigFunc func(ctx context.Context, userID, deviceID int64) (*ResendDeviceConfigResult, error)
 type RevokeDeviceFunc func(ctx context.Context, userID, deviceID int64) (*RevokeDeviceResult, error)
 
 type Dependencies struct {
-	HealthChecker      HealthChecker
-	CreateDevice       CreateDeviceFunc
-	ListUserDevices    ListUserDevicesFunc
-	ResendDeviceConfig ResendDeviceConfigFunc
-	RevokeDevice       RevokeDeviceFunc
-	RequestTimeout     time.Duration
-	ReadinessTimeout   time.Duration
-	ReadinessRoutePath string
+	HealthChecker         HealthChecker
+	ResolveTelegramUserID ResolveTelegramUserIDFunc
+	CreateDevice          CreateDeviceFunc
+	ListUserDevices       ListUserDevicesFunc
+	ResendDeviceConfig    ResendDeviceConfigFunc
+	RevokeDevice          RevokeDeviceFunc
+	RequestTimeout        time.Duration
+	ReadinessTimeout      time.Duration
+	ReadinessRoutePath    string
 }
 
 type Device struct {
@@ -126,7 +128,7 @@ func createDeviceHandler(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
-		userID, ok := userIDFromRequest(w, r)
+		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID)
 		if !ok {
 			return
 		}
@@ -165,7 +167,7 @@ func listUserDevicesHandler(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
-		userID, ok := userIDFromRequest(w, r)
+		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID)
 		if !ok {
 			return
 		}
@@ -187,7 +189,7 @@ func resendDeviceConfigHandler(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
-		userID, ok := userIDFromRequest(w, r)
+		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID)
 		if !ok {
 			return
 		}
@@ -214,7 +216,7 @@ func revokeDeviceHandler(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
-		userID, ok := userIDFromRequest(w, r)
+		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID)
 		if !ok {
 			return
 		}
@@ -234,16 +236,38 @@ func revokeDeviceHandler(deps Dependencies) http.HandlerFunc {
 	}
 }
 
-func userIDFromRequest(w http.ResponseWriter, r *http.Request) (int64, bool) {
+func userIDFromRequest(w http.ResponseWriter, r *http.Request, resolveTelegramUserID ResolveTelegramUserIDFunc) (int64, bool) {
 	value := r.Header.Get("X-User-ID")
-	if value == "" {
-		writeError(w, http.StatusBadRequest, "X-User-ID header is required")
+	if value != "" {
+		userID, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || userID <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid X-User-ID header")
+			return 0, false
+		}
+
+		return userID, true
+	}
+
+	telegramValue := r.Header.Get("X-Telegram-ID")
+	if telegramValue == "" {
+		writeError(w, http.StatusBadRequest, "X-User-ID or X-Telegram-ID header is required")
 		return 0, false
 	}
 
-	userID, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || userID <= 0 {
-		writeError(w, http.StatusBadRequest, "invalid X-User-ID header")
+	if resolveTelegramUserID == nil {
+		writeError(w, http.StatusServiceUnavailable, "telegram identity is not configured")
+		return 0, false
+	}
+
+	telegramUserID, err := strconv.ParseInt(telegramValue, 10, 64)
+	if err != nil || telegramUserID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid X-Telegram-ID header")
+		return 0, false
+	}
+
+	userID, err := resolveTelegramUserID(r.Context(), telegramUserID)
+	if err != nil {
+		writeUseCaseError(w, err)
 		return 0, false
 	}
 
