@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"vpn-backend/internal/infra/backendapi"
+	botqrcode "vpn-backend/internal/infra/qrcode"
 	"vpn-backend/internal/infra/telegram"
 )
 
@@ -27,6 +28,7 @@ const maxDeviceNameLength = 128
 type telegramClient interface {
 	GetUpdates(ctx context.Context, offset int64, timeout time.Duration) ([]telegram.Update, error)
 	SendMessage(ctx context.Context, chatID int64, text string) error
+	SendDocument(ctx context.Context, chatID int64, fileName string, document []byte, caption string) error
 }
 
 type backendClient interface {
@@ -167,7 +169,14 @@ func (b *Bot) handleNewDevice(ctx context.Context, message *telegram.Message, ra
 		return b.telegram.SendMessage(ctx, message.Chat.ID, formatCreateDeviceError(err))
 	}
 
-	return b.telegram.SendMessage(ctx, message.Chat.ID, formatCreateDeviceMessage(result))
+	deviceName := ""
+	clientConfig := ""
+	if result != nil {
+		deviceName = result.Device.Name
+		clientConfig = result.ClientConfig
+	}
+
+	return b.sendConfigResult(ctx, message.Chat.ID, formatCreateDeviceMessage(result), deviceName, clientConfig)
 }
 
 func (b *Bot) handleConfig(ctx context.Context, message *telegram.Message, rawDeviceID string) error {
@@ -186,7 +195,14 @@ func (b *Bot) handleConfig(ctx context.Context, message *telegram.Message, rawDe
 		return b.telegram.SendMessage(ctx, message.Chat.ID, formatResendDeviceConfigError(err))
 	}
 
-	return b.telegram.SendMessage(ctx, message.Chat.ID, formatResendDeviceConfigMessage(result))
+	deviceName := ""
+	clientConfig := ""
+	if result != nil {
+		deviceName = result.Device.Name
+		clientConfig = result.ClientConfig
+	}
+
+	return b.sendConfigResult(ctx, message.Chat.ID, formatResendDeviceConfigMessage(result), deviceName, clientConfig)
 }
 
 func (b *Bot) handleRevoke(ctx context.Context, message *telegram.Message, rawDeviceID string) error {
@@ -354,6 +370,30 @@ func formatRevokeDeviceError(err error) string {
 	return "Failed to revoke the device right now. Please try again later."
 }
 
+func (b *Bot) sendConfigResult(ctx context.Context, chatID int64, text, deviceName, clientConfig string) error {
+	if err := b.telegram.SendMessage(ctx, chatID, text); err != nil {
+		return err
+	}
+
+	qrPNG, err := botqrcode.GeneratePNG(clientConfig)
+	if err != nil {
+		b.logger.Error("generate qr code", "device_name", deviceName, "error", err)
+		return b.telegram.SendMessage(ctx, chatID, "QR code is unavailable right now. Use the config text above.")
+	}
+
+	fileName := "wireguard-config-qr.png"
+	if deviceName != "" {
+		fileName = sanitizeFileName(deviceName) + "-wireguard-qr.png"
+	}
+
+	if err := b.telegram.SendDocument(ctx, chatID, fileName, qrPNG, "WireGuard QR code"); err != nil {
+		b.logger.Error("send qr code", "device_name", deviceName, "error", err)
+		return b.telegram.SendMessage(ctx, chatID, "QR code is unavailable right now. Use the config text above.")
+	}
+
+	return nil
+}
+
 func validateDeviceName(rawName string) (string, string) {
 	name := strings.TrimSpace(rawName)
 	if name == "" {
@@ -385,4 +425,31 @@ func parseDeviceID(rawValue, usage string) (int64, string) {
 	}
 
 	return deviceID, ""
+}
+
+func sanitizeFileName(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return "device"
+	}
+
+	var builder strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '-' || r == '_':
+			builder.WriteRune(r)
+		case r == ' ':
+			builder.WriteByte('-')
+		}
+	}
+
+	if builder.Len() == 0 {
+		return "device"
+	}
+
+	return builder.String()
 }

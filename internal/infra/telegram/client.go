@@ -1,9 +1,11 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -46,6 +48,12 @@ type sendMessageResponse struct {
 	OK          bool    `json:"ok"`
 	Description string  `json:"description"`
 	Result      Message `json:"result"`
+}
+
+type sendDocumentResponse struct {
+	OK          bool            `json:"ok"`
+	Description string          `json:"description"`
+	Result      json.RawMessage `json:"result"`
 }
 
 func NewClient(token string, timeout time.Duration) (*Client, error) {
@@ -109,6 +117,51 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) err
 	return nil
 }
 
+func (c *Client) SendDocument(ctx context.Context, chatID int64, fileName string, document []byte, caption string) error {
+	if len(document) == 0 {
+		return fmt.Errorf("document is required")
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	if err := writer.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return fmt.Errorf("write chat_id field: %w", err)
+	}
+
+	if caption != "" {
+		if err := writer.WriteField("caption", caption); err != nil {
+			return fmt.Errorf("write caption field: %w", err)
+		}
+	}
+
+	part, err := writer.CreateFormFile("document", fileName)
+	if err != nil {
+		return fmt.Errorf("create document form file: %w", err)
+	}
+
+	if _, err := part.Write(document); err != nil {
+		return fmt.Errorf("write document body: %w", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/sendDocument", &body)
+	if err != nil {
+		return fmt.Errorf("build sendDocument request: %w", err)
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+
+	var response sendDocumentResponse
+	if err := c.do(request, &response); err != nil {
+		return fmt.Errorf("send document: %w", err)
+	}
+
+	return nil
+}
+
 func (c *Client) do(request *http.Request, target interface{}) error {
 	response, err := c.httpClient.Do(request)
 	if err != nil {
@@ -126,6 +179,10 @@ func (c *Client) do(request *http.Request, target interface{}) error {
 			return fmt.Errorf("%s", body.Description)
 		}
 	case *sendMessageResponse:
+		if !body.OK {
+			return fmt.Errorf("%s", body.Description)
+		}
+	case *sendDocumentResponse:
 		if !body.OK {
 			return fmt.Errorf("%s", body.Description)
 		}

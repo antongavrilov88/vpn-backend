@@ -51,6 +51,10 @@ func TestHandleMessageNewDeviceSuccess(t *testing.T) {
 		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
 	}
 
+	if len(telegramClient.sentPhotos) != 1 {
+		t.Fatalf("sent documents = %d, want %d", len(telegramClient.sentPhotos), 1)
+	}
+
 	message := telegramClient.sentMessages[0]
 	if message.chatID != 99 {
 		t.Fatalf("chat id = %d, want %d", message.chatID, 99)
@@ -59,6 +63,20 @@ func TestHandleMessageNewDeviceSuccess(t *testing.T) {
 	want := "Device created successfully.\nName: dad-laptop\nIP: 10.67.0.2\nStatus: active\nCreated: 2026-04-02\n\nClient config:\n[Interface]\nPrivateKey = private-key\n"
 	if message.text != want {
 		t.Fatalf("message = %q, want %q", message.text, want)
+	}
+
+	document := telegramClient.sentPhotos[0]
+	if document.chatID != 99 {
+		t.Fatalf("document chat id = %d, want %d", document.chatID, 99)
+	}
+	if document.fileName != "dad-laptop-wireguard-qr.png" {
+		t.Fatalf("document file name = %q, want %q", document.fileName, "dad-laptop-wireguard-qr.png")
+	}
+	if document.caption != "WireGuard QR code" {
+		t.Fatalf("document caption = %q, want %q", document.caption, "WireGuard QR code")
+	}
+	if len(document.document) == 0 {
+		t.Fatal("document bytes are empty")
 	}
 }
 
@@ -243,9 +261,60 @@ func TestHandleMessageConfigSuccess(t *testing.T) {
 		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
 	}
 
+	if len(telegramClient.sentPhotos) != 1 {
+		t.Fatalf("sent documents = %d, want %d", len(telegramClient.sentPhotos), 1)
+	}
+
 	want := "Device config rebuilt successfully.\nName: dad-laptop\nIP: 10.67.0.2\n\nClient config:\n[Interface]\nPrivateKey = private-key\n"
 	if got := telegramClient.sentMessages[0].text; got != want {
 		t.Fatalf("message = %q, want %q", got, want)
+	}
+
+	document := telegramClient.sentPhotos[0]
+	if document.fileName != "dad-laptop-wireguard-qr.png" {
+		t.Fatalf("document file name = %q, want %q", document.fileName, "dad-laptop-wireguard-qr.png")
+	}
+	if len(document.document) == 0 {
+		t.Fatal("document bytes are empty")
+	}
+}
+
+func TestHandleMessageConfigFallsBackWhenQRDeliveryFails(t *testing.T) {
+	telegramClient := &stubTelegramClient{sendPhotoErr: errors.New("telegram sendDocument failed")}
+	backendClient := &stubBackendClient{
+		resendDeviceConfigResult: &backendapi.ResendDeviceConfigResult{
+			Device: backendapi.Device{
+				ID:         100,
+				Name:       "dad-laptop",
+				AssignedIP: "10.67.0.2",
+				Status:     "active",
+			},
+			ClientConfig: "[Interface]\nPrivateKey = private-key\n",
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/config 100",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	if len(telegramClient.sentMessages) != 2 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 2)
+	}
+
+	if len(telegramClient.sentPhotos) != 0 {
+		t.Fatalf("sent documents = %d, want %d", len(telegramClient.sentPhotos), 0)
+	}
+
+	want := "QR code is unavailable right now. Use the config text above."
+	if got := telegramClient.sentMessages[1].text; got != want {
+		t.Fatalf("fallback message = %q, want %q", got, want)
 	}
 }
 
@@ -515,11 +584,20 @@ func TestHandleMessageRevokeMapsBackendErrors(t *testing.T) {
 
 type stubTelegramClient struct {
 	sentMessages []sentMessage
+	sentPhotos   []sentPhoto
+	sendPhotoErr error
 }
 
 type sentMessage struct {
 	chatID int64
 	text   string
+}
+
+type sentPhoto struct {
+	chatID   int64
+	fileName string
+	document []byte
+	caption  string
 }
 
 func (s *stubTelegramClient) GetUpdates(context.Context, int64, time.Duration) ([]telegram.Update, error) {
@@ -530,6 +608,20 @@ func (s *stubTelegramClient) SendMessage(_ context.Context, chatID int64, text s
 	s.sentMessages = append(s.sentMessages, sentMessage{
 		chatID: chatID,
 		text:   text,
+	})
+	return nil
+}
+
+func (s *stubTelegramClient) SendDocument(_ context.Context, chatID int64, fileName string, document []byte, caption string) error {
+	if s.sendPhotoErr != nil {
+		return s.sendPhotoErr
+	}
+
+	s.sentPhotos = append(s.sentPhotos, sentPhoto{
+		chatID:   chatID,
+		fileName: fileName,
+		document: append([]byte(nil), document...),
+		caption:  caption,
 	})
 	return nil
 }
