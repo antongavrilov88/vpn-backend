@@ -45,6 +45,10 @@ type ResendDeviceConfigResult struct {
 	ClientConfig string `json:"client_config"`
 }
 
+type RevokeDeviceResult struct {
+	Device Device `json:"device"`
+}
+
 var ErrNotFound = errors.New("backend api not found")
 
 type APIError struct {
@@ -185,6 +189,31 @@ func (c *Client) ResendDeviceConfig(ctx context.Context, telegramUserID, deviceI
 	var result ResendDeviceConfigResult
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode backend resend device config response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (c *Client) RevokeDevice(ctx context.Context, telegramUserID, deviceID int64) (*RevokeDeviceResult, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/devices/"+strconv.FormatInt(deviceID, 10)+"/revoke", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build revoke device request: %w", err)
+	}
+	request.Header.Set("X-Telegram-ID", strconv.FormatInt(telegramUserID, 10))
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("call backend revoke device: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return nil, decodeAPIError(response.Body, response.StatusCode)
+	}
+
+	var result RevokeDeviceResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode backend revoke device response: %w", err)
 	}
 
 	return &result, nil

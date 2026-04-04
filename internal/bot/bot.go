@@ -34,6 +34,7 @@ type backendClient interface {
 	ListDevices(ctx context.Context, telegramUserID int64) (*backendapi.ListDevicesResult, error)
 	CreateDevice(ctx context.Context, telegramUserID int64, name string) (*backendapi.CreateDeviceResult, error)
 	ResendDeviceConfig(ctx context.Context, telegramUserID, deviceID int64) (*backendapi.ResendDeviceConfigResult, error)
+	RevokeDevice(ctx context.Context, telegramUserID, deviceID int64) (*backendapi.RevokeDeviceResult, error)
 }
 
 func New(logger *slog.Logger, telegramClient telegramClient, backendClient backendClient, pollTimeout time.Duration) *Bot {
@@ -102,6 +103,8 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) erro
 		return b.handleNewDevice(ctx, message, strings.TrimSpace(strings.TrimPrefix(message.Text, fields[0])))
 	case "/config":
 		return b.handleConfig(ctx, message, strings.TrimSpace(strings.TrimPrefix(message.Text, fields[0])))
+	case "/revoke":
+		return b.handleRevoke(ctx, message, strings.TrimSpace(strings.TrimPrefix(message.Text, fields[0])))
 	default:
 		return nil
 	}
@@ -117,7 +120,7 @@ func (b *Bot) startMessage(ctx context.Context) string {
 }
 
 func helpMessage() string {
-	return "Available commands:\n/start - show welcome message\n/help - show this help\n/devices - show your devices\n/newdevice <device_name> - create a new device\n/config <device_id> - resend config for a device"
+	return "Available commands:\n/start - show welcome message\n/help - show this help\n/devices - show your devices\n/newdevice <device_name> - create a new device\n/config <device_id> - resend config for a device\n/revoke <device_id> - revoke a device"
 }
 
 func (b *Bot) checkBackend(ctx context.Context) error {
@@ -184,6 +187,25 @@ func (b *Bot) handleConfig(ctx context.Context, message *telegram.Message, rawDe
 	}
 
 	return b.telegram.SendMessage(ctx, message.Chat.ID, formatResendDeviceConfigMessage(result))
+}
+
+func (b *Bot) handleRevoke(ctx context.Context, message *telegram.Message, rawDeviceID string) error {
+	if message.From == nil {
+		return b.telegram.SendMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
+	}
+
+	deviceID, validationMessage := parseDeviceID(rawDeviceID, "/revoke <device_id>")
+	if validationMessage != "" {
+		return b.telegram.SendMessage(ctx, message.Chat.ID, validationMessage)
+	}
+
+	result, err := b.backend.RevokeDevice(ctx, message.From.ID, deviceID)
+	if err != nil {
+		b.logger.Error("revoke device via backend", "telegram_user_id", message.From.ID, "device_id", deviceID, "error", err)
+		return b.telegram.SendMessage(ctx, message.Chat.ID, formatRevokeDeviceError(err))
+	}
+
+	return b.telegram.SendMessage(ctx, message.Chat.ID, formatRevokeDeviceMessage(result))
 }
 
 func formatDevicesMessage(result *backendapi.ListDevicesResult) string {
@@ -290,6 +312,46 @@ func formatResendDeviceConfigError(err error) string {
 	}
 
 	return "Failed to resend the device config right now. Please try again later."
+}
+
+func formatRevokeDeviceMessage(result *backendapi.RevokeDeviceResult) string {
+	if result == nil {
+		return "Device revoked."
+	}
+
+	lines := []string{"Device revoked successfully."}
+	if result.Device.Name != "" {
+		lines = append(lines, fmt.Sprintf("Name: %s", result.Device.Name))
+	}
+	if result.Device.AssignedIP != "" {
+		lines = append(lines, fmt.Sprintf("IP: %s", result.Device.AssignedIP))
+	}
+	if result.Device.Status != "" {
+		lines = append(lines, fmt.Sprintf("Status: %s", result.Device.Status))
+	}
+	if result.Device.RevokedAt != nil {
+		lines = append(lines, fmt.Sprintf("Revoked: %s", result.Device.RevokedAt.Format("2006-01-02")))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func formatRevokeDeviceError(err error) string {
+	var apiErr *backendapi.APIError
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.StatusCode == 403:
+			return "You are not allowed to revoke that device."
+		case apiErr.StatusCode == 404:
+			return "Device not found or unavailable."
+		case apiErr.StatusCode == 409 && apiErr.Message != "":
+			return fmt.Sprintf("Cannot revoke device: %s.", apiErr.Message)
+		default:
+			return "Failed to revoke the device right now. Please try again later."
+		}
+	}
+
+	return "Failed to revoke the device right now. Please try again later."
 }
 
 func validateDeviceName(rawName string) (string, string) {
