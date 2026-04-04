@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -36,7 +37,12 @@ type HTTPConfig struct {
 }
 
 type DBConfig struct {
-	URL string
+	URL               string
+	MaxConns          int32
+	MinConns          int32
+	MaxConnLifetime   time.Duration
+	MaxConnIdleTime   time.Duration
+	HealthCheckPeriod time.Duration
 }
 
 type CryptoConfig struct {
@@ -74,6 +80,16 @@ type BackendAPIConfig struct {
 }
 
 func Load() (Config, error) {
+	dbURL := getEnv("DB_URL", "")
+	if dbURL == "" {
+		builtDBURL, err := buildPostgresURL()
+		if err != nil {
+			return Config{}, err
+		}
+
+		dbURL = builtDBURL
+	}
+
 	readTimeout, err := getDurationEnv("HTTP_READ_TIMEOUT", 5*time.Second)
 	if err != nil {
 		return Config{}, err
@@ -104,6 +120,29 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	dbMaxConnLifetime, err := getDurationEnv("DB_MAX_CONN_LIFETIME", 0)
+	if err != nil {
+		return Config{}, err
+	}
+
+	dbMaxConnIdleTime, err := getDurationEnv("DB_MAX_CONN_IDLE_TIME", 0)
+	if err != nil {
+		return Config{}, err
+	}
+
+	dbHealthCheckPeriod, err := getDurationEnv("DB_HEALTH_CHECK_PERIOD", 0)
+	if err != nil {
+		return Config{}, err
+	}
+
+	proxyPort, err := getIntEnv("PROXY_SSH_PORT", 22)
+	if err != nil {
+		return Config{}, err
+	}
+	if proxyPort <= 0 || proxyPort > 65535 {
+		return Config{}, fmt.Errorf("PROXY_SSH_PORT must be between 1 and 65535")
+	}
+
 	proxyTimeout, err := getDurationEnv("PROXY_SSH_TIMEOUT", 5*time.Second)
 	if err != nil {
 		return Config{}, err
@@ -117,6 +156,22 @@ func Load() (Config, error) {
 	cipherKey, err := getCipherKeyEnv("DEVICE_PRIVATE_KEY_CIPHER_KEY")
 	if err != nil {
 		return Config{}, err
+	}
+
+	dbMaxConns, err := getOptionalIntEnv("DB_MAX_CONNS")
+	if err != nil {
+		return Config{}, err
+	}
+	if dbMaxConns != nil && *dbMaxConns <= 0 {
+		return Config{}, fmt.Errorf("DB_MAX_CONNS must be greater than 0")
+	}
+
+	dbMinConns, err := getOptionalIntEnv("DB_MIN_CONNS")
+	if err != nil {
+		return Config{}, err
+	}
+	if dbMinConns != nil && *dbMinConns < 0 {
+		return Config{}, fmt.Errorf("DB_MIN_CONNS must be greater than or equal to 0")
 	}
 
 	persistentKeepalive, err := getOptionalIntEnv("VPN_PERSISTENT_KEEPALIVE")
@@ -136,7 +191,10 @@ func Load() (Config, error) {
 			ShutdownTimeout:  shutdownTimeout,
 		},
 		DB: DBConfig{
-			URL: getEnv("DB_URL", buildPostgresURL()),
+			URL:               dbURL,
+			MaxConnLifetime:   dbMaxConnLifetime,
+			MaxConnIdleTime:   dbMaxConnIdleTime,
+			HealthCheckPeriod: dbHealthCheckPeriod,
 		},
 		Crypto: CryptoConfig{
 			DevicePrivateKeyCipherKey: cipherKey,
@@ -150,15 +208,23 @@ func Load() (Config, error) {
 		},
 		Proxy: ProxyConfig{
 			Host:                     getEnv("PROXY_SSH_HOST", ""),
-			Port:                     getIntEnv("PROXY_SSH_PORT", 22),
+			Port:                     proxyPort,
 			User:                     getEnv("PROXY_SSH_USER", ""),
 			PrivateKeyPath:           getEnv("PROXY_SSH_PRIVATE_KEY_PATH", ""),
 			KnownHostsPath:           getEnv("PROXY_SSH_KNOWN_HOSTS_PATH", ""),
 			InsecureSkipHostKeyCheck: insecureSkipHostKeyCheck,
-			AddPeerCommand:           getEnv("PROXY_ADD_PEER_COMMAND", "sudo /usr/local/bin/vpn-peer-add"),
-			RemovePeerCommand:        getEnv("PROXY_REMOVE_PEER_COMMAND", "sudo /usr/local/bin/vpn-peer-remove"),
+			AddPeerCommand:           getEnv("PROXY_ADD_PEER_COMMAND", ""),
+			RemovePeerCommand:        getEnv("PROXY_REMOVE_PEER_COMMAND", ""),
 			Timeout:                  proxyTimeout,
 		},
+	}
+
+	if dbMaxConns != nil {
+		cfg.DB.MaxConns = int32(*dbMaxConns)
+	}
+
+	if dbMinConns != nil {
+		cfg.DB.MinConns = int32(*dbMinConns)
 	}
 
 	if cfg.DB.URL == "" {
@@ -229,18 +295,13 @@ func getDurationEnv(key string, fallback time.Duration) (time.Duration, error) {
 	return duration, nil
 }
 
-func getIntEnv(key string, fallback int) int {
+func getIntEnv(key string, fallback int) (int, error) {
 	value := os.Getenv(key)
 	if value == "" {
-		return fallback
+		return fallback, nil
 	}
 
-	var parsed int
-	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil {
-		return fallback
-	}
-
-	return parsed
+	return parseIntEnv(key, value)
 }
 
 func getOptionalIntEnv(key string) (*int, error) {
@@ -249,9 +310,9 @@ func getOptionalIntEnv(key string) (*int, error) {
 		return nil, nil
 	}
 
-	var parsed int
-	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil {
-		return nil, fmt.Errorf("invalid integer for %s", key)
+	parsed, err := parseIntEnv(key, value)
+	if err != nil {
+		return nil, err
 	}
 
 	return &parsed, nil
@@ -293,7 +354,7 @@ func getListEnv(key string) []string {
 	return values
 }
 
-func buildPostgresURL() string {
+func buildPostgresURL() (string, error) {
 	host := os.Getenv("POSTGRES_HOST")
 	port := os.Getenv("POSTGRES_PORT")
 	database := os.Getenv("POSTGRES_DB")
@@ -301,7 +362,12 @@ func buildPostgresURL() string {
 	password := os.Getenv("POSTGRES_PASSWORD")
 
 	if host == "" || port == "" || database == "" || user == "" || password == "" {
-		return ""
+		return "", nil
+	}
+
+	sslMode := getEnv("POSTGRES_SSL_MODE", "disable")
+	if err := validatePostgresSSLMode(sslMode); err != nil {
+		return "", err
 	}
 
 	return (&url.URL{
@@ -310,9 +376,9 @@ func buildPostgresURL() string {
 		Host:   fmt.Sprintf("%s:%s", host, port),
 		Path:   database,
 		RawQuery: url.Values{
-			"sslmode": []string{"disable"},
+			"sslmode": []string{sslMode},
 		}.Encode(),
-	}).String()
+	}).String(), nil
 }
 
 func validateAbsoluteURL(raw string) error {
@@ -359,4 +425,22 @@ func getCipherKeyEnv(key string) ([]byte, error) {
 	}
 
 	return decoded, nil
+}
+
+func parseIntEnv(key, value string) (int, error) {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer for %s", key)
+	}
+
+	return parsed, nil
+}
+
+func validatePostgresSSLMode(value string) error {
+	switch value {
+	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
+		return nil
+	default:
+		return fmt.Errorf("invalid POSTGRES_SSL_MODE")
+	}
 }

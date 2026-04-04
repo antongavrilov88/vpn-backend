@@ -29,7 +29,7 @@ type App struct {
 func New(ctx context.Context, cfg config.Config) (*App, error) {
 	log := logger.New(cfg.AppEnv)
 
-	db, err := pgxpool.New(ctx, cfg.DB.URL)
+	db, err := newDBPool(ctx, cfg.DB)
 	if err != nil {
 		return nil, fmt.Errorf("create postgres pool: %w", err)
 	}
@@ -66,6 +66,35 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	}, nil
 }
 
+func newDBPool(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) {
+	poolConfig, err := pgxpool.ParseConfig(cfg.URL)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.MaxConns > 0 {
+		poolConfig.MaxConns = cfg.MaxConns
+	}
+
+	if cfg.MinConns > 0 {
+		poolConfig.MinConns = cfg.MinConns
+	}
+
+	if cfg.MaxConnLifetime > 0 {
+		poolConfig.MaxConnLifetime = cfg.MaxConnLifetime
+	}
+
+	if cfg.MaxConnIdleTime > 0 {
+		poolConfig.MaxConnIdleTime = cfg.MaxConnIdleTime
+	}
+
+	if cfg.HealthCheckPeriod > 0 {
+		poolConfig.HealthCheckPeriod = cfg.HealthCheckPeriod
+	}
+
+	return pgxpool.NewWithConfig(ctx, poolConfig)
+}
+
 func newCreateDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*CreateDeviceUseCase, error) {
 	requiredSettings := []requiredSetting{
 		{name: "DEVICE_PRIVATE_KEY_CIPHER_KEY", present: len(cfg.Crypto.DevicePrivateKeyCipherKey) > 0},
@@ -75,6 +104,9 @@ func newCreateDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*CreateDeviceU
 		{name: "PROXY_SSH_HOST", present: cfg.Proxy.Host != ""},
 		{name: "PROXY_SSH_USER", present: cfg.Proxy.User != ""},
 		{name: "PROXY_SSH_PRIVATE_KEY_PATH", present: cfg.Proxy.PrivateKeyPath != ""},
+		{name: "PROXY_ADD_PEER_COMMAND", present: cfg.Proxy.AddPeerCommand != ""},
+		{name: "PROXY_REMOVE_PEER_COMMAND", present: cfg.Proxy.RemovePeerCommand != ""},
+		{name: "PROXY_SSH_KNOWN_HOSTS_PATH or PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", present: cfg.Proxy.KnownHostsPath != "" || cfg.Proxy.InsecureSkipHostKeyCheck},
 	}
 
 	if !hasAny(requiredSettings) {
@@ -187,22 +219,16 @@ func newListUserDevicesUseCase(db *pgxpool.Pool) *ListUserDevicesUseCase {
 }
 
 func newRevokeDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*RevokeDeviceUseCase, error) {
-	activationSettings := []requiredSetting{
-		{name: "PROXY_SSH_HOST", present: cfg.Proxy.Host != ""},
-		{name: "PROXY_SSH_USER", present: cfg.Proxy.User != ""},
-		{name: "PROXY_SSH_PRIVATE_KEY_PATH", present: cfg.Proxy.PrivateKeyPath != ""},
-	}
-
-	if !hasAny(activationSettings) {
-		return nil, nil
-	}
-
 	requiredSettings := []requiredSetting{
 		{name: "PROXY_SSH_HOST", present: cfg.Proxy.Host != ""},
 		{name: "PROXY_SSH_USER", present: cfg.Proxy.User != ""},
 		{name: "PROXY_SSH_PRIVATE_KEY_PATH", present: cfg.Proxy.PrivateKeyPath != ""},
 		{name: "PROXY_REMOVE_PEER_COMMAND", present: cfg.Proxy.RemovePeerCommand != ""},
 		{name: "PROXY_SSH_KNOWN_HOSTS_PATH or PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", present: cfg.Proxy.KnownHostsPath != "" || cfg.Proxy.InsecureSkipHostKeyCheck},
+	}
+
+	if !hasAny(requiredSettings) {
+		return nil, nil
 	}
 
 	if missing := missingSettings(requiredSettings); len(missing) > 0 {

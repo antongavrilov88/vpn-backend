@@ -13,7 +13,7 @@ cp .env.example .env
 - `TELEGRAM_BOT_TOKEN`
 - `BACKEND_API_BASE_URL`
 
-For local development, `BACKEND_API_BASE_URL=http://localhost:18080` is the expected value if the API runs on the current local port.
+For local development, `BACKEND_API_BASE_URL=http://localhost:8080` is the expected value if the API runs with the default local HTTP address.
 
 ## Required env values
 
@@ -21,7 +21,7 @@ For local development, `BACKEND_API_BASE_URL=http://localhost:18080` is the expe
 APP_ENV=development
 TELEGRAM_BOT_TOKEN=<TELEGRAM_BOT_TOKEN>
 TELEGRAM_POLL_TIMEOUT=30s
-BACKEND_API_BASE_URL=http://localhost:18080
+BACKEND_API_BASE_URL=http://localhost:8080
 BACKEND_API_TIMEOUT=5s
 ```
 
@@ -57,6 +57,10 @@ The bot currently supports:
 
 - `/start`
 - `/help`
+- `/devices`
+- `/newdevice <device_name>`
+- `/config <device_id>`
+- `/revoke <device_id>`
 
 The bot is a thin client over backend API:
 

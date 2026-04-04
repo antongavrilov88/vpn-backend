@@ -14,6 +14,11 @@ func TestLoad(t *testing.T) {
 	t.Setenv("HTTP_REQUEST_TIMEOUT", "32s")
 	t.Setenv("HTTP_READINESS_TIMEOUT", "3s")
 	t.Setenv("HTTP_SHUTDOWN_TIMEOUT", "12s")
+	t.Setenv("DB_MAX_CONNS", "10")
+	t.Setenv("DB_MIN_CONNS", "2")
+	t.Setenv("DB_MAX_CONN_LIFETIME", "30m")
+	t.Setenv("DB_MAX_CONN_IDLE_TIME", "5m")
+	t.Setenv("DB_HEALTH_CHECK_PERIOD", "1m")
 	t.Setenv("PROXY_SSH_TIMEOUT", "7s")
 	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
 	t.Setenv("DEVICE_PRIVATE_KEY_CIPHER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
@@ -70,6 +75,26 @@ func TestLoad(t *testing.T) {
 
 	if cfg.DB.URL != "postgres://test:test@localhost:5432/test?sslmode=disable" {
 		t.Fatalf("DB.URL = %q, want expected url", cfg.DB.URL)
+	}
+
+	if cfg.DB.MaxConns != 10 {
+		t.Fatalf("DB.MaxConns = %d, want %d", cfg.DB.MaxConns, 10)
+	}
+
+	if cfg.DB.MinConns != 2 {
+		t.Fatalf("DB.MinConns = %d, want %d", cfg.DB.MinConns, 2)
+	}
+
+	if cfg.DB.MaxConnLifetime != 30*time.Minute {
+		t.Fatalf("DB.MaxConnLifetime = %v, want %v", cfg.DB.MaxConnLifetime, 30*time.Minute)
+	}
+
+	if cfg.DB.MaxConnIdleTime != 5*time.Minute {
+		t.Fatalf("DB.MaxConnIdleTime = %v, want %v", cfg.DB.MaxConnIdleTime, 5*time.Minute)
+	}
+
+	if cfg.DB.HealthCheckPeriod != time.Minute {
+		t.Fatalf("DB.HealthCheckPeriod = %v, want %v", cfg.DB.HealthCheckPeriod, time.Minute)
 	}
 
 	if len(cfg.Crypto.DevicePrivateKeyCipherKey) != 32 {
@@ -139,6 +164,7 @@ func TestLoadBuildsDBURLFromPostgresEnv(t *testing.T) {
 	t.Setenv("POSTGRES_DB", "vpn_mvp")
 	t.Setenv("POSTGRES_USER", "postgres")
 	t.Setenv("POSTGRES_PASSWORD", "postgres")
+	t.Setenv("POSTGRES_SSL_MODE", "verify-full")
 	t.Setenv("DEVICE_PRIVATE_KEY_CIPHER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 
 	cfg, err := Load()
@@ -146,7 +172,7 @@ func TestLoadBuildsDBURLFromPostgresEnv(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 
-	if cfg.DB.URL != "postgres://postgres:postgres@localhost:5433/vpn_mvp?sslmode=disable" {
+	if cfg.DB.URL != "postgres://postgres:postgres@localhost:5433/vpn_mvp?sslmode=verify-full" {
 		t.Fatalf("DB.URL = %q, want derived url", cfg.DB.URL)
 	}
 }
@@ -187,6 +213,26 @@ func TestLoadRejectsInvalidProxyTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidProxyPort(t *testing.T) {
+	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("PROXY_SSH_PORT", "22workers")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadRejectsProxyPortOutsideValidRange(t *testing.T) {
+	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("PROXY_SSH_PORT", "70000")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want error")
+	}
+}
+
 func TestLoadRejectsInvalidProxyHostKeyCheckFlag(t *testing.T) {
 	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
 	t.Setenv("PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", "maybe")
@@ -194,6 +240,59 @@ func TestLoadRejectsInvalidProxyHostKeyCheckFlag(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadRejectsInvalidDBPoolSettings(t *testing.T) {
+	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("DB_MAX_CONNS", "10workers")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadRejectsZeroDBMaxConns(t *testing.T) {
+	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("DB_MAX_CONNS", "0")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadRejectsInvalidPostgresSSLMode(t *testing.T) {
+	t.Setenv("POSTGRES_HOST", "localhost")
+	t.Setenv("POSTGRES_PORT", "5433")
+	t.Setenv("POSTGRES_DB", "vpn_mvp")
+	t.Setenv("POSTGRES_USER", "postgres")
+	t.Setenv("POSTGRES_PASSWORD", "postgres")
+	t.Setenv("POSTGRES_SSL_MODE", "broken")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadIgnoresDerivedPostgresSSLModeWhenDBURLIsSet(t *testing.T) {
+	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+	t.Setenv("POSTGRES_HOST", "localhost")
+	t.Setenv("POSTGRES_PORT", "5433")
+	t.Setenv("POSTGRES_DB", "vpn_mvp")
+	t.Setenv("POSTGRES_USER", "postgres")
+	t.Setenv("POSTGRES_PASSWORD", "postgres")
+	t.Setenv("POSTGRES_SSL_MODE", "broken")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.DB.URL != "postgres://test:test@localhost:5432/test?sslmode=disable" {
+		t.Fatalf("DB.URL = %q, want expected url", cfg.DB.URL)
 	}
 }
 
@@ -228,6 +327,23 @@ func TestLoadRejectsInvalidCipherKey(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadLeavesProxyCommandsEmptyWhenUnset(t *testing.T) {
+	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Proxy.AddPeerCommand != "" {
+		t.Fatalf("Proxy.AddPeerCommand = %q, want empty", cfg.Proxy.AddPeerCommand)
+	}
+
+	if cfg.Proxy.RemovePeerCommand != "" {
+		t.Fatalf("Proxy.RemovePeerCommand = %q, want empty", cfg.Proxy.RemovePeerCommand)
 	}
 }
 
