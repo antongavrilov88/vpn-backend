@@ -83,6 +83,17 @@ type stubCreateDeviceUseCase struct {
 	err    error
 }
 
+type stubResolveTelegramUserID struct {
+	telegramUserID int64
+	userID         int64
+	err            error
+}
+
+func (s *stubResolveTelegramUserID) Execute(_ context.Context, telegramUserID int64) (int64, error) {
+	s.telegramUserID = telegramUserID
+	return s.userID, s.err
+}
+
 func (s *stubCreateDeviceUseCase) Execute(_ context.Context, userID int64, name string) (*CreateDeviceResult, error) {
 	s.userID = userID
 	s.name = name
@@ -200,5 +211,50 @@ func TestNewRouterRevokeDeviceMapsNotFound(t *testing.T) {
 
 	if body := recorder.Body.String(); body != "{\"error\":\"not found\"}\n" {
 		t.Fatalf("body = %q, want %q", body, "{\"error\":\"not found\"}\n")
+	}
+}
+
+func TestNewRouterListDevicesResolvesTelegramIdentity(t *testing.T) {
+	resolver := &stubResolveTelegramUserID{userID: 42}
+	useCase := &stubListUserDevicesUseCase{
+		result: &ListUserDevicesResult{
+			Devices: []Device{
+				{
+					ID:         100,
+					Name:       "Dad Phone",
+					AssignedIP: "10.67.0.2",
+					Status:     "active",
+					CreatedAt:  time.Date(2026, 4, 2, 10, 11, 12, 0, time.UTC),
+				},
+			},
+		},
+	}
+
+	router := NewRouter(Dependencies{
+		ResolveTelegramUserID: resolver.Execute,
+		ListUserDevices:       useCase.Execute,
+		RequestTimeout:        5 * time.Second,
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/devices", nil)
+	request.Header.Set("X-Telegram-ID", "777")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+
+	if resolver.telegramUserID != 777 {
+		t.Fatalf("telegram user id = %d, want %d", resolver.telegramUserID, 777)
+	}
+
+	if useCase.userID != 42 {
+		t.Fatalf("resolved user id = %d, want %d", useCase.userID, 42)
+	}
+
+	if body := recorder.Body.String(); !strings.Contains(body, `"devices":[`) {
+		t.Fatalf("body = %q, want devices payload", body)
 	}
 }

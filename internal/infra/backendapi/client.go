@@ -2,8 +2,12 @@ package backendapi
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +20,21 @@ type Client struct {
 type HealthChecker interface {
 	Health(ctx context.Context) error
 }
+
+type Device struct {
+	ID         int64      `json:"id"`
+	Name       string     `json:"name"`
+	AssignedIP string     `json:"assigned_ip"`
+	Status     string     `json:"status"`
+	CreatedAt  time.Time  `json:"created_at"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+}
+
+type ListDevicesResult struct {
+	Devices []Device `json:"devices"`
+}
+
+var ErrNotFound = errors.New("backend api not found")
 
 func NewClient(baseURL string, timeout time.Duration) (*Client, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
@@ -52,4 +71,46 @@ func (c *Client) Health(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (c *Client) ListDevices(ctx context.Context, telegramUserID int64) (*ListDevicesResult, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/devices", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build list devices request: %w", err)
+	}
+	request.Header.Set("X-Telegram-ID", strconv.FormatInt(telegramUserID, 10))
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("call backend devices: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode == http.StatusNotFound {
+		return nil, ErrNotFound
+	}
+
+	if response.StatusCode != http.StatusOK {
+		return nil, decodeAPIError(response.Body, response.StatusCode)
+	}
+
+	var result ListDevicesResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode backend devices response: %w", err)
+	}
+
+	return &result, nil
+}
+
+type errorResponse struct {
+	Error string `json:"error"`
+}
+
+func decodeAPIError(body io.Reader, statusCode int) error {
+	var payload errorResponse
+	if err := json.NewDecoder(body).Decode(&payload); err == nil && payload.Error != "" {
+		return fmt.Errorf("backend api status %d: %s", statusCode, payload.Error)
+	}
+
+	return fmt.Errorf("backend api status %d", statusCode)
 }

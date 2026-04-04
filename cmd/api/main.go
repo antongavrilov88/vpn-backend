@@ -12,6 +12,7 @@ import (
 	"vpn-backend/internal/app"
 	"vpn-backend/internal/config"
 	"vpn-backend/internal/domain"
+	"vpn-backend/internal/infra/postgres"
 	apphttp "vpn-backend/internal/transport/http"
 )
 
@@ -48,6 +49,15 @@ func run() error {
 		Addr: cfg.HTTP.Addr,
 		Handler: apphttp.NewRouter(apphttp.Dependencies{
 			HealthChecker: application.DB,
+			ResolveTelegramUserID: func(ctx context.Context, telegramUserID int64) (int64, error) {
+				userRepository := postgres.NewUserRepository(application.DB)
+				user, err := userRepository.GetByTelegramID(ctx, telegramUserID)
+				if err != nil {
+					return 0, err
+				}
+
+				return user.ID, nil
+			},
 			CreateDevice: func(ctx context.Context, userID int64, name string) (*apphttp.CreateDeviceResult, error) {
 				if application.CreateDevice == nil {
 					return nil, fmt.Errorf("create device is not configured")
