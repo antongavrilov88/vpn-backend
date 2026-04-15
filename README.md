@@ -53,6 +53,9 @@ Fill these only when you want `CreateDevice` to touch a real proxy/VPN setup:
 - `PROXY_ADD_PEER_COMMAND`
 - `PROXY_REMOVE_PEER_COMMAND`
 
+If `VPN_ALLOWED_IPS` is omitted, generated client configs default to `0.0.0.0/0`.
+Set `VPN_ALLOWED_IPS` only when you need a different client-route policy.
+
 Generate the private-key cipher key locally when needed:
 
 ```bash

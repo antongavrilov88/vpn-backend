@@ -16,6 +16,8 @@ import (
 	"vpn-backend/internal/infra/wireguard"
 )
 
+const defaultClientAllowedIP = "0.0.0.0/0"
+
 type App struct {
 	Config             config.Config
 	Logger             *slog.Logger
@@ -96,11 +98,12 @@ func newDBPool(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) 
 }
 
 func newCreateDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*CreateDeviceUseCase, error) {
+	clientAllowedIPs := effectiveClientAllowedIPs(cfg.VPN.AllowedIPs)
+
 	requiredSettings := []requiredSetting{
 		{name: "DEVICE_PRIVATE_KEY_CIPHER_KEY", present: len(cfg.Crypto.DevicePrivateKeyCipherKey) > 0},
 		{name: "VPN_SERVER_PUBLIC_KEY", present: cfg.VPN.ServerPublicKey != ""},
 		{name: "VPN_SERVER_ENDPOINT", present: cfg.VPN.Endpoint != ""},
-		{name: "VPN_ALLOWED_IPS", present: len(cfg.VPN.AllowedIPs) > 0},
 		{name: "PROXY_SSH_HOST", present: cfg.Proxy.Host != ""},
 		{name: "PROXY_SSH_USER", present: cfg.Proxy.User != ""},
 		{name: "PROXY_SSH_PRIVATE_KEY_PATH", present: cfg.Proxy.PrivateKeyPath != ""},
@@ -138,7 +141,7 @@ func newCreateDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*CreateDeviceU
 	clientConfigBuilder, err := wireguard.NewClientConfigBuilder(wireguard.ClientConfigBuilderConfig{
 		ServerPublicKey:     cfg.VPN.ServerPublicKey,
 		Endpoint:            cfg.VPN.Endpoint,
-		AllowedIPs:          cfg.VPN.AllowedIPs,
+		AllowedIPs:          clientAllowedIPs,
 		DNS:                 cfg.VPN.DNS,
 		PersistentKeepalive: cfg.VPN.PersistentKeepalive,
 	})
@@ -174,11 +177,12 @@ func newCreateDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*CreateDeviceU
 }
 
 func newResendDeviceConfigUseCase(cfg config.Config, db *pgxpool.Pool) (*ResendDeviceConfigUseCase, error) {
+	clientAllowedIPs := effectiveClientAllowedIPs(cfg.VPN.AllowedIPs)
+
 	requiredSettings := []requiredSetting{
 		{name: "DEVICE_PRIVATE_KEY_CIPHER_KEY", present: len(cfg.Crypto.DevicePrivateKeyCipherKey) > 0},
 		{name: "VPN_SERVER_PUBLIC_KEY", present: cfg.VPN.ServerPublicKey != ""},
 		{name: "VPN_SERVER_ENDPOINT", present: cfg.VPN.Endpoint != ""},
-		{name: "VPN_ALLOWED_IPS", present: len(cfg.VPN.AllowedIPs) > 0},
 	}
 
 	if !hasAny(requiredSettings) {
@@ -200,7 +204,7 @@ func newResendDeviceConfigUseCase(cfg config.Config, db *pgxpool.Pool) (*ResendD
 	clientConfigBuilder, err := wireguard.NewClientConfigBuilder(wireguard.ClientConfigBuilderConfig{
 		ServerPublicKey:     cfg.VPN.ServerPublicKey,
 		Endpoint:            cfg.VPN.Endpoint,
-		AllowedIPs:          cfg.VPN.AllowedIPs,
+		AllowedIPs:          clientAllowedIPs,
 		DNS:                 cfg.VPN.DNS,
 		PersistentKeepalive: cfg.VPN.PersistentKeepalive,
 	})
@@ -263,6 +267,14 @@ func newRevokeDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*RevokeDeviceU
 		deviceRepository,
 		transport,
 	), nil
+}
+
+func effectiveClientAllowedIPs(configured []string) []string {
+	if len(configured) > 0 {
+		return append([]string(nil), configured...)
+	}
+
+	return []string{defaultClientAllowedIP}
 }
 
 type requiredSetting struct {
