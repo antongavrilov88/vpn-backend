@@ -58,9 +58,30 @@ The bot currently supports:
 - `/start`
 - `/help`
 - `/devices`
-- `/newdevice <device_name>`
+- `/newdevice`
 - `/config <device_id>`
 - `/revoke <device_id>`
+
+For normal device management, `/devices` is the primary flow:
+
+- it sends readable per-device cards
+- active devices include inline actions for:
+  - `Get config`
+  - `Show QR`
+  - `Revoke`
+- revoked devices are hidden from the main list
+
+For the main create flow:
+
+- tap `Create device` or send `/newdevice`
+- the bot asks for the device name in the next message
+- once you reply with the name, the bot provisions the device and returns the config
+
+The bot also keeps a persistent reply keyboard with:
+
+- `My devices`
+- `Create device`
+- `Help`
 
 The bot is a thin client over backend API:
 

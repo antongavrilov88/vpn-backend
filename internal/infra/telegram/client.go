@@ -19,8 +19,9 @@ type Client struct {
 }
 
 type Update struct {
-	UpdateID int64    `json:"update_id"`
-	Message  *Message `json:"message"`
+	UpdateID      int64          `json:"update_id"`
+	Message       *Message       `json:"message,omitempty"`
+	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
 }
 
 type Message struct {
@@ -36,6 +37,33 @@ type Chat struct {
 
 type User struct {
 	ID int64 `json:"id"`
+}
+
+type CallbackQuery struct {
+	ID      string   `json:"id"`
+	From    *User    `json:"from"`
+	Message *Message `json:"message,omitempty"`
+	Data    string   `json:"data"`
+}
+
+type InlineKeyboardMarkup struct {
+	InlineKeyboard [][]InlineKeyboardButton `json:"inline_keyboard"`
+}
+
+type InlineKeyboardButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data,omitempty"`
+}
+
+type ReplyKeyboardMarkup struct {
+	Keyboard              [][]KeyboardButton `json:"keyboard"`
+	ResizeKeyboard        bool               `json:"resize_keyboard,omitempty"`
+	IsPersistent          bool               `json:"is_persistent,omitempty"`
+	InputFieldPlaceholder string             `json:"input_field_placeholder,omitempty"`
+}
+
+type KeyboardButton struct {
+	Text string `json:"text"`
 }
 
 type updatesResponse struct {
@@ -54,6 +82,11 @@ type sendDocumentResponse struct {
 	OK          bool            `json:"ok"`
 	Description string          `json:"description"`
 	Result      json.RawMessage `json:"result"`
+}
+
+type apiResponse struct {
+	OK          bool   `json:"ok"`
+	Description string `json:"description"`
 }
 
 func NewClient(token string, timeout time.Duration) (*Client, error) {
@@ -99,9 +132,29 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 }
 
 func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) error {
+	return c.sendMessage(ctx, chatID, text, nil)
+}
+
+func (c *Client) SendMessageWithInlineKeyboard(ctx context.Context, chatID int64, text string, keyboard InlineKeyboardMarkup) error {
+	return c.sendMessage(ctx, chatID, text, &keyboard)
+}
+
+func (c *Client) SendMessageWithReplyKeyboard(ctx context.Context, chatID int64, text string, keyboard ReplyKeyboardMarkup) error {
+	return c.sendMessage(ctx, chatID, text, &keyboard)
+}
+
+func (c *Client) sendMessage(ctx context.Context, chatID int64, text string, replyMarkup interface{}) error {
 	values := url.Values{}
 	values.Set("chat_id", strconv.FormatInt(chatID, 10))
 	values.Set("text", text)
+	if replyMarkup != nil {
+		payload, err := json.Marshal(replyMarkup)
+		if err != nil {
+			return fmt.Errorf("encode sendMessage reply_markup: %w", err)
+		}
+
+		values.Set("reply_markup", string(payload))
+	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/sendMessage", strings.NewReader(values.Encode()))
 	if err != nil {
@@ -112,6 +165,27 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) err
 	var response sendMessageResponse
 	if err := c.do(request, &response); err != nil {
 		return fmt.Errorf("send message: %w", err)
+	}
+
+	return nil
+}
+
+func (c *Client) AnswerCallbackQuery(ctx context.Context, callbackQueryID, text string) error {
+	values := url.Values{}
+	values.Set("callback_query_id", callbackQueryID)
+	if text != "" {
+		values.Set("text", text)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/answerCallbackQuery", strings.NewReader(values.Encode()))
+	if err != nil {
+		return fmt.Errorf("build answerCallbackQuery request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	var response apiResponse
+	if err := c.do(request, &response); err != nil {
+		return fmt.Errorf("answer callback query: %w", err)
 	}
 
 	return nil
@@ -183,6 +257,10 @@ func (c *Client) do(request *http.Request, target interface{}) error {
 			return fmt.Errorf("%s", body.Description)
 		}
 	case *sendDocumentResponse:
+		if !body.OK {
+			return fmt.Errorf("%s", body.Description)
+		}
+	case *apiResponse:
 		if !body.OK {
 			return fmt.Errorf("%s", body.Description)
 		}

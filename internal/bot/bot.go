@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -21,14 +22,28 @@ type Bot struct {
 	telegram    telegramClient
 	backend     backendClient
 	pollTimeout time.Duration
+	stateMu     sync.Mutex
+	pendingName map[int64]struct{}
 }
 
-const maxDeviceNameLength = 128
+const (
+	maxDeviceNameLength  = 128
+	deviceActionPrefix   = "device"
+	deviceActionConfig   = "config"
+	deviceActionShowQR   = "qr"
+	deviceActionRevoke   = "revoke"
+	menuDevicesLabel     = "My devices"
+	menuCreateLabel      = "Create device"
+	menuHelpLabel        = "Help"
+)
 
 type telegramClient interface {
 	GetUpdates(ctx context.Context, offset int64, timeout time.Duration) ([]telegram.Update, error)
 	SendMessage(ctx context.Context, chatID int64, text string) error
+	SendMessageWithInlineKeyboard(ctx context.Context, chatID int64, text string, keyboard telegram.InlineKeyboardMarkup) error
+	SendMessageWithReplyKeyboard(ctx context.Context, chatID int64, text string, keyboard telegram.ReplyKeyboardMarkup) error
 	SendDocument(ctx context.Context, chatID int64, fileName string, document []byte, caption string) error
+	AnswerCallbackQuery(ctx context.Context, callbackQueryID, text string) error
 }
 
 type backendClient interface {
@@ -45,6 +60,7 @@ func New(logger *slog.Logger, telegramClient telegramClient, backendClient backe
 		telegram:    telegramClient,
 		backend:     backendClient,
 		pollTimeout: pollTimeout,
+		pendingName: make(map[int64]struct{}),
 	}
 }
 
@@ -73,14 +89,15 @@ func (b *Bot) Run(ctx context.Context) error {
 		}
 
 		for _, update := range updates {
-			if update.Message == nil || update.Message.Text == "" {
-				offset = update.UpdateID + 1
-				continue
-			}
-
-			if err := b.handleMessage(ctx, update.Message); err != nil {
-				b.logger.Error("handle telegram message", "error", err)
-				continue
+			switch {
+			case update.CallbackQuery != nil:
+				if err := b.handleCallbackQuery(ctx, update.CallbackQuery); err != nil {
+					b.logger.Error("handle telegram callback query", "error", err)
+				}
+			case update.Message != nil && update.Message.Text != "":
+				if err := b.handleMessage(ctx, update.Message); err != nil {
+					b.logger.Error("handle telegram message", "error", err)
+				}
 			}
 
 			offset = update.UpdateID + 1
@@ -89,7 +106,8 @@ func (b *Bot) Run(ctx context.Context) error {
 }
 
 func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) error {
-	fields := strings.Fields(message.Text)
+	trimmedText := strings.TrimSpace(message.Text)
+	fields := strings.Fields(trimmedText)
 	if len(fields) == 0 {
 		return nil
 	}
@@ -101,16 +119,40 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) erro
 
 	b.logger.Info(
 		"handle telegram command",
-		"command", fields[0],
+		"command", trimmedText,
 		"chat_id", message.Chat.ID,
 		"telegram_user_id", telegramUserID,
 	)
 
+	if menuCommand, ok := normalizeMenuCommand(trimmedText); ok {
+		b.clearPendingDeviceName(message.Chat.ID)
+		switch menuCommand {
+		case "/devices":
+			return b.handleDevices(ctx, message)
+		case "/newdevice":
+			return b.handleNewDevice(ctx, message, "")
+		case "/help":
+			return b.sendMenuMessage(ctx, message.Chat.ID, helpMessage())
+		}
+	}
+
+	if strings.HasPrefix(fields[0], "/") {
+		if fields[0] != "/newdevice" {
+			b.clearPendingDeviceName(message.Chat.ID)
+		}
+	}
+
+	if b.hasPendingDeviceName(message.Chat.ID) && !strings.HasPrefix(fields[0], "/") {
+		return b.handlePendingDeviceName(ctx, message, trimmedText)
+	}
+
 	switch fields[0] {
 	case "/start":
-		return b.telegram.SendMessage(ctx, message.Chat.ID, b.startMessage(ctx))
+		b.clearPendingDeviceName(message.Chat.ID)
+		return b.sendMenuMessage(ctx, message.Chat.ID, b.startMessage(ctx))
 	case "/help":
-		return b.telegram.SendMessage(ctx, message.Chat.ID, helpMessage())
+		b.clearPendingDeviceName(message.Chat.ID)
+		return b.sendMenuMessage(ctx, message.Chat.ID, helpMessage())
 	case "/devices":
 		return b.handleDevices(ctx, message)
 	case "/newdevice":
@@ -134,7 +176,7 @@ func (b *Bot) startMessage(ctx context.Context) string {
 }
 
 func helpMessage() string {
-	return "Available commands:\n/start - show welcome message\n/help - show this help\n/devices - show your devices\n/newdevice <device_name> - create a new device\n/config <device_id> - resend config for a device\n/revoke <device_id> - revoke a device"
+	return "Available commands:\n/start - show welcome message\n/help - show this help\n/devices - show your devices and available actions\n/newdevice - create a new device\n\nYou can also use the buttons below."
 }
 
 func (b *Bot) checkBackend(ctx context.Context) error {
@@ -148,37 +190,83 @@ func (b *Bot) checkBackend(ctx context.Context) error {
 	return nil
 }
 
+func (b *Bot) handleCallbackQuery(ctx context.Context, callback *telegram.CallbackQuery) error {
+	if callback == nil {
+		return nil
+	}
+
+	telegramUserID := int64(0)
+	if callback.From != nil {
+		telegramUserID = callback.From.ID
+	}
+
+	b.logger.Info(
+		"handle telegram callback",
+		"data", callback.Data,
+		"telegram_user_id", telegramUserID,
+	)
+
+	action, deviceID, err := parseDeviceAction(callback.Data)
+	if err != nil {
+		b.answerCallback(ctx, callback.ID, "This action is no longer available.")
+		return nil
+	}
+
+	switch action {
+	case deviceActionConfig:
+		return b.handleConfigCallback(ctx, callback, deviceID)
+	case deviceActionShowQR:
+		return b.handleQRCodeCallback(ctx, callback, deviceID)
+	case deviceActionRevoke:
+		return b.handleRevokeCallback(ctx, callback, deviceID)
+	default:
+		b.answerCallback(ctx, callback.ID, "This action is no longer available.")
+		return nil
+	}
+}
+
 func (b *Bot) handleDevices(ctx context.Context, message *telegram.Message) error {
 	if message.From == nil {
-		return b.telegram.SendMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
+		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
 	}
 
 	result, err := b.backend.ListDevices(ctx, message.From.ID)
 	if err != nil {
 		b.logger.Error("list devices via backend", "telegram_user_id", message.From.ID, "error", err)
 		if errors.Is(err, backendapi.ErrNotFound) {
-			return b.telegram.SendMessage(ctx, message.Chat.ID, "You are not linked to a VPN user yet.")
+			return b.sendMenuMessage(ctx, message.Chat.ID, "You are not linked to a VPN user yet.")
 		}
-		return b.telegram.SendMessage(ctx, message.Chat.ID, "Failed to load devices right now. Please try again later.")
+		return b.sendMenuMessage(ctx, message.Chat.ID, "Failed to load devices right now. Please try again later.")
 	}
 
-	return b.telegram.SendMessage(ctx, message.Chat.ID, formatDevicesMessage(result))
+	return b.sendDevicesList(ctx, message.Chat.ID, result)
 }
 
 func (b *Bot) handleNewDevice(ctx context.Context, message *telegram.Message, rawName string) error {
 	if message.From == nil {
-		return b.telegram.SendMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
+		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
 	}
+
+	if strings.TrimSpace(rawName) == "" {
+		b.markPendingDeviceName(message.Chat.ID)
+		return b.sendMenuMessage(ctx, message.Chat.ID, "Let's spin up a new device.\n\nHow should we call it?\nExamples: iphone, macbook, dad-phone")
+	}
+
+	b.clearPendingDeviceName(message.Chat.ID)
 
 	name, validationMessage := validateDeviceName(rawName)
 	if validationMessage != "" {
-		return b.telegram.SendMessage(ctx, message.Chat.ID, validationMessage)
+		return b.sendMenuMessage(ctx, message.Chat.ID, validationMessage)
+	}
+
+	if err := b.sendMenuMessage(ctx, message.Chat.ID, createDeviceProgressMessage(name)); err != nil {
+		return err
 	}
 
 	result, err := b.backend.CreateDevice(ctx, message.From.ID, name)
 	if err != nil {
 		b.logger.Error("create device via backend", "telegram_user_id", message.From.ID, "device_name", name, "error", err)
-		return b.telegram.SendMessage(ctx, message.Chat.ID, formatCreateDeviceError(err))
+		return b.sendMenuMessage(ctx, message.Chat.ID, formatCreateDeviceError(err))
 	}
 
 	deviceName := ""
@@ -193,18 +281,18 @@ func (b *Bot) handleNewDevice(ctx context.Context, message *telegram.Message, ra
 
 func (b *Bot) handleConfig(ctx context.Context, message *telegram.Message, rawDeviceID string) error {
 	if message.From == nil {
-		return b.telegram.SendMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
+		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
 	}
 
 	deviceID, validationMessage := parseDeviceID(rawDeviceID, "/config <device_id>")
 	if validationMessage != "" {
-		return b.telegram.SendMessage(ctx, message.Chat.ID, validationMessage)
+		return b.sendMenuMessage(ctx, message.Chat.ID, validationMessage)
 	}
 
 	result, err := b.backend.ResendDeviceConfig(ctx, message.From.ID, deviceID)
 	if err != nil {
 		b.logger.Error("resend device config via backend", "telegram_user_id", message.From.ID, "device_id", deviceID, "error", err)
-		return b.telegram.SendMessage(ctx, message.Chat.ID, formatResendDeviceConfigError(err))
+		return b.sendMenuMessage(ctx, message.Chat.ID, formatResendDeviceConfigError(err))
 	}
 
 	deviceName := ""
@@ -219,41 +307,203 @@ func (b *Bot) handleConfig(ctx context.Context, message *telegram.Message, rawDe
 
 func (b *Bot) handleRevoke(ctx context.Context, message *telegram.Message, rawDeviceID string) error {
 	if message.From == nil {
-		return b.telegram.SendMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
+		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
 	}
 
 	deviceID, validationMessage := parseDeviceID(rawDeviceID, "/revoke <device_id>")
 	if validationMessage != "" {
-		return b.telegram.SendMessage(ctx, message.Chat.ID, validationMessage)
+		return b.sendMenuMessage(ctx, message.Chat.ID, validationMessage)
 	}
 
 	result, err := b.backend.RevokeDevice(ctx, message.From.ID, deviceID)
 	if err != nil {
 		b.logger.Error("revoke device via backend", "telegram_user_id", message.From.ID, "device_id", deviceID, "error", err)
-		return b.telegram.SendMessage(ctx, message.Chat.ID, formatRevokeDeviceError(err))
+		return b.sendMenuMessage(ctx, message.Chat.ID, formatRevokeDeviceError(err))
 	}
 
-	return b.telegram.SendMessage(ctx, message.Chat.ID, formatRevokeDeviceMessage(result))
+	return b.sendMenuMessage(ctx, message.Chat.ID, formatRevokeDeviceMessage(result))
 }
 
-func formatDevicesMessage(result *backendapi.ListDevicesResult) string {
-	if result == nil || len(result.Devices) == 0 {
-		return "You have no devices yet."
+func (b *Bot) handleConfigCallback(ctx context.Context, callback *telegram.CallbackQuery, deviceID int64) error {
+	chatID, telegramUserID, ok := callbackContext(callback)
+	if !ok {
+		b.answerCallback(ctx, callback.ID, "This action is no longer available.")
+		return nil
 	}
 
-	lines := []string{"Your devices:"}
-	for i, device := range result.Devices {
-		lines = append(lines, "")
-		lines = append(lines, fmt.Sprintf("%d. %s", i+1, device.Name))
-		lines = append(lines, fmt.Sprintf("Status: %s", device.Status))
-		lines = append(lines, fmt.Sprintf("IP: %s", device.AssignedIP))
-		lines = append(lines, fmt.Sprintf("Created: %s", device.CreatedAt.Format("2006-01-02")))
-		if device.RevokedAt != nil {
-			lines = append(lines, fmt.Sprintf("Revoked: %s", device.RevokedAt.Format("2006-01-02")))
+	b.answerCallback(ctx, callback.ID, configProgressMessage())
+
+	result, err := b.backend.ResendDeviceConfig(ctx, telegramUserID, deviceID)
+	if err != nil {
+		b.logger.Error("resend device config via callback", "telegram_user_id", telegramUserID, "device_id", deviceID, "error", err)
+		message := formatResendDeviceConfigError(err)
+		return b.sendMenuMessage(ctx, chatID, message)
+	}
+
+	return b.sendConfigMessage(ctx, chatID, formatResendDeviceConfigMessage(result))
+}
+
+func (b *Bot) handleQRCodeCallback(ctx context.Context, callback *telegram.CallbackQuery, deviceID int64) error {
+	chatID, telegramUserID, ok := callbackContext(callback)
+	if !ok {
+		b.answerCallback(ctx, callback.ID, "This action is no longer available.")
+		return nil
+	}
+
+	b.answerCallback(ctx, callback.ID, qrProgressMessage())
+
+	result, err := b.backend.ResendDeviceConfig(ctx, telegramUserID, deviceID)
+	if err != nil {
+		b.logger.Error("resend device qr via callback", "telegram_user_id", telegramUserID, "device_id", deviceID, "error", err)
+		message := formatResendDeviceConfigError(err)
+		return b.sendMenuMessage(ctx, chatID, message)
+	}
+
+	deviceName := ""
+	clientConfig := ""
+	if result != nil {
+		deviceName = result.Device.Name
+		clientConfig = result.ClientConfig
+	}
+
+	return b.sendQRCodeResult(ctx, chatID, deviceName, clientConfig)
+}
+
+func (b *Bot) handleRevokeCallback(ctx context.Context, callback *telegram.CallbackQuery, deviceID int64) error {
+	chatID, telegramUserID, ok := callbackContext(callback)
+	if !ok {
+		b.answerCallback(ctx, callback.ID, "This action is no longer available.")
+		return nil
+	}
+
+	b.answerCallback(ctx, callback.ID, revokeProgressMessage())
+
+	result, err := b.backend.RevokeDevice(ctx, telegramUserID, deviceID)
+	if err != nil {
+		b.logger.Error("revoke device via callback", "telegram_user_id", telegramUserID, "device_id", deviceID, "error", err)
+		message := formatRevokeDeviceError(err)
+		return b.sendMenuMessage(ctx, chatID, message)
+	}
+
+	return b.sendMenuMessage(ctx, chatID, formatRevokeDeviceMessage(result))
+}
+
+func (b *Bot) sendDevicesList(ctx context.Context, chatID int64, result *backendapi.ListDevicesResult) error {
+	activeDevices := visibleDevices(result)
+
+	if err := b.sendMenuMessage(ctx, chatID, formatDevicesSummary(result, activeDevices)); err != nil {
+		return err
+	}
+
+	if len(activeDevices) == 0 {
+		return nil
+	}
+
+	for _, device := range activeDevices {
+		keyboard := deviceActionsKeyboard(device)
+		if keyboard != nil {
+			if err := b.telegram.SendMessageWithInlineKeyboard(ctx, chatID, formatDeviceCard(device), *keyboard); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := b.sendMenuMessage(ctx, chatID, formatDeviceCard(device)); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+func visibleDevices(result *backendapi.ListDevicesResult) []backendapi.Device {
+	if result == nil || len(result.Devices) == 0 {
+		return nil
+	}
+
+	devices := make([]backendapi.Device, 0, len(result.Devices))
+	for _, device := range result.Devices {
+		if device.Status == "revoked" {
+			continue
+		}
+
+		devices = append(devices, device)
+	}
+
+	return devices
+}
+
+func formatDevicesSummary(result *backendapi.ListDevicesResult, activeDevices []backendapi.Device) string {
+	if result == nil || len(result.Devices) == 0 {
+		return "You have no devices yet.\n\nTap Create device below to add one."
+	}
+
+	if len(activeDevices) == 0 {
+		return "You have no active devices right now.\n\nTap Create device below to add a new one."
+	}
+
+	return "Your devices:\n\nTap a button under any active device to get the config, show the QR, or revoke it."
+}
+
+func formatDeviceCard(device backendapi.Device) string {
+	lines := []string{fmt.Sprintf("Name: %s", device.Name)}
+	lines = append(lines, fmt.Sprintf("Status: %s", formatDeviceStatus(device.Status)))
+
+	if device.AssignedIP != "" {
+		lines = append(lines, fmt.Sprintf("IP: %s", device.AssignedIP))
+	}
+
+	if !device.CreatedAt.IsZero() {
+		lines = append(lines, fmt.Sprintf("Created: %s", device.CreatedAt.Format("2006-01-02")))
+	}
+
+	if device.RevokedAt != nil {
+		lines = append(lines, fmt.Sprintf("Revoked: %s", device.RevokedAt.Format("2006-01-02")))
+	}
+
 	return strings.Join(lines, "\n")
+}
+
+func formatDeviceStatus(status string) string {
+	switch status {
+	case "active":
+		return "Active"
+	case "revoked":
+		return "Revoked"
+	default:
+		if status == "" {
+			return "Unknown"
+		}
+
+		return strings.ToUpper(status[:1]) + status[1:]
+	}
+}
+
+func deviceActionsKeyboard(device backendapi.Device) *telegram.InlineKeyboardMarkup {
+	if device.ID <= 0 || device.Status == "revoked" {
+		return nil
+	}
+
+	return &telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{
+				{
+					Text:         "Get config",
+					CallbackData: deviceActionData(deviceActionConfig, device.ID),
+				},
+				{
+					Text:         "Show QR",
+					CallbackData: deviceActionData(deviceActionShowQR, device.ID),
+				},
+			},
+			{
+				{
+					Text:         "Revoke",
+					CallbackData: deviceActionData(deviceActionRevoke, device.ID),
+				},
+			},
+		},
+	}
 }
 
 func formatCreateDeviceMessage(result *backendapi.CreateDeviceResult) string {
@@ -281,6 +531,22 @@ func formatCreateDeviceMessage(result *backendapi.CreateDeviceResult) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func createDeviceProgressMessage(name string) string {
+	return fmt.Sprintf("Rick is calibrating the portal gun for %s.\n\nBuilding your WireGuard config...", name)
+}
+
+func configProgressMessage() string {
+	return "Morty, hold still. Rebuilding that config."
+}
+
+func qrProgressMessage() string {
+	return "Opening a tiny portal and turning it into a QR code."
+}
+
+func revokeProgressMessage() string {
+	return "Rick is closing this portal and cleaning up the timeline."
 }
 
 func formatCreateDeviceError(err error) string {
@@ -382,15 +648,49 @@ func formatRevokeDeviceError(err error) string {
 	return "Failed to revoke the device right now. Please try again later."
 }
 
+func callbackContext(callback *telegram.CallbackQuery) (chatID, telegramUserID int64, ok bool) {
+	if callback == nil || callback.Message == nil || callback.From == nil {
+		return 0, 0, false
+	}
+
+	return callback.Message.Chat.ID, callback.From.ID, true
+}
+
+func (b *Bot) answerCallback(ctx context.Context, callbackQueryID, text string) {
+	if callbackQueryID == "" {
+		return
+	}
+
+	if err := b.telegram.AnswerCallbackQuery(ctx, callbackQueryID, text); err != nil {
+		b.logger.Warn("answer callback query", "callback_query_id", callbackQueryID, "error", err)
+	}
+}
+
+func (b *Bot) sendMenuMessage(ctx context.Context, chatID int64, text string) error {
+	return b.telegram.SendMessageWithReplyKeyboard(ctx, chatID, text, mainMenuKeyboard())
+}
+
+func (b *Bot) sendConfigMessage(ctx context.Context, chatID int64, text string) error {
+	return b.sendMenuMessage(ctx, chatID, text)
+}
+
 func (b *Bot) sendConfigResult(ctx context.Context, chatID int64, text, deviceName, clientConfig string) error {
-	if err := b.telegram.SendMessage(ctx, chatID, text); err != nil {
+	if err := b.sendConfigMessage(ctx, chatID, text); err != nil {
 		return err
 	}
 
+	return b.sendQRCodeDocument(ctx, chatID, deviceName, clientConfig, "QR code is unavailable right now. Use the config text above.")
+}
+
+func (b *Bot) sendQRCodeResult(ctx context.Context, chatID int64, deviceName, clientConfig string) error {
+	return b.sendQRCodeDocument(ctx, chatID, deviceName, clientConfig, "QR code is unavailable right now. Use Get config to see the raw config text.")
+}
+
+func (b *Bot) sendQRCodeDocument(ctx context.Context, chatID int64, deviceName, clientConfig, fallbackMessage string) error {
 	qrPNG, err := botqrcode.GeneratePNG(clientConfig)
 	if err != nil {
 		b.logger.Error("generate qr code", "device_name", deviceName, "error", err)
-		return b.telegram.SendMessage(ctx, chatID, "QR code is unavailable right now. Use the config text above.")
+		return b.sendMenuMessage(ctx, chatID, fallbackMessage)
 	}
 
 	fileName := "wireguard-config-qr.png"
@@ -400,7 +700,7 @@ func (b *Bot) sendConfigResult(ctx context.Context, chatID int64, text, deviceNa
 
 	if err := b.telegram.SendDocument(ctx, chatID, fileName, qrPNG, "WireGuard QR code"); err != nil {
 		b.logger.Error("send qr code", "device_name", deviceName, "error", err)
-		return b.telegram.SendMessage(ctx, chatID, "QR code is unavailable right now. Use the config text above.")
+		return b.sendMenuMessage(ctx, chatID, fallbackMessage)
 	}
 
 	return nil
@@ -437,6 +737,85 @@ func parseDeviceID(rawValue, usage string) (int64, string) {
 	}
 
 	return deviceID, ""
+}
+
+func normalizeMenuCommand(text string) (string, bool) {
+	switch strings.TrimSpace(text) {
+	case menuDevicesLabel:
+		return "/devices", true
+	case menuCreateLabel:
+		return "/newdevice", true
+	case menuHelpLabel:
+		return "/help", true
+	default:
+		return "", false
+	}
+}
+
+func mainMenuKeyboard() telegram.ReplyKeyboardMarkup {
+	return telegram.ReplyKeyboardMarkup{
+		Keyboard: [][]telegram.KeyboardButton{
+			{
+				{Text: menuDevicesLabel},
+				{Text: menuCreateLabel},
+			},
+			{
+				{Text: menuHelpLabel},
+			},
+		},
+		ResizeKeyboard:        true,
+		IsPersistent:          true,
+		InputFieldPlaceholder: "Choose an action",
+	}
+}
+
+func (b *Bot) markPendingDeviceName(chatID int64) {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+
+	b.pendingName[chatID] = struct{}{}
+}
+
+func (b *Bot) clearPendingDeviceName(chatID int64) {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+
+	delete(b.pendingName, chatID)
+}
+
+func (b *Bot) hasPendingDeviceName(chatID int64) bool {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+
+	_, ok := b.pendingName[chatID]
+	return ok
+}
+
+func (b *Bot) handlePendingDeviceName(ctx context.Context, message *telegram.Message, rawName string) error {
+	name, validationMessage := validateDeviceName(rawName)
+	if validationMessage != "" {
+		return b.sendMenuMessage(ctx, message.Chat.ID, validationMessage)
+	}
+
+	return b.handleNewDevice(ctx, message, name)
+}
+
+func deviceActionData(action string, deviceID int64) string {
+	return fmt.Sprintf("%s:%s:%d", deviceActionPrefix, action, deviceID)
+}
+
+func parseDeviceAction(value string) (string, int64, error) {
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 || parts[0] != deviceActionPrefix {
+		return "", 0, fmt.Errorf("invalid device action")
+	}
+
+	deviceID, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || deviceID <= 0 {
+		return "", 0, fmt.Errorf("invalid device id")
+	}
+
+	return parts[1], deviceID, nil
 }
 
 func sanitizeFileName(value string) string {

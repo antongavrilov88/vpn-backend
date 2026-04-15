@@ -47,15 +47,19 @@ func TestHandleMessageNewDeviceSuccess(t *testing.T) {
 		t.Fatalf("device name = %q, want %q", backendClient.createDeviceName, "dad-laptop")
 	}
 
-	if len(telegramClient.sentMessages) != 1 {
-		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+	if len(telegramClient.sentMessages) != 2 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 2)
 	}
 
 	if len(telegramClient.sentPhotos) != 1 {
 		t.Fatalf("sent documents = %d, want %d", len(telegramClient.sentPhotos), 1)
 	}
 
-	message := telegramClient.sentMessages[0]
+	if got := telegramClient.sentMessages[0].text; got != "Rick is calibrating the portal gun for dad-laptop.\n\nBuilding your WireGuard config..." {
+		t.Fatalf("progress message = %q", got)
+	}
+
+	message := telegramClient.sentMessages[1]
 	if message.chatID != 99 {
 		t.Fatalf("chat id = %d, want %d", message.chatID, 99)
 	}
@@ -177,11 +181,106 @@ func TestHandleMessageDevicesSuccess(t *testing.T) {
 		t.Fatalf("telegram user id = %d, want %d", backendClient.listDevicesTelegramUserID, 777)
 	}
 
+	if len(telegramClient.sentMessages) != 2 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 2)
+	}
+
+	wantSummary := "Your devices:\n\nTap a button under any active device to get the config, show the QR, or revoke it."
+	if got := telegramClient.sentMessages[0].text; got != wantSummary {
+		t.Fatalf("summary message = %q, want %q", got, wantSummary)
+	}
+
+	wantActive := "Name: dad-laptop\nStatus: Active\nIP: 10.68.0.2\nCreated: 2026-04-15"
+	if got := telegramClient.sentMessages[1].text; got != wantActive {
+		t.Fatalf("active device message = %q, want %q", got, wantActive)
+	}
+
+	keyboard := telegramClient.sentMessages[1].keyboard
+	if keyboard == nil {
+		t.Fatal("active device keyboard = nil, want inline actions")
+	}
+
+	if len(keyboard.InlineKeyboard) != 2 {
+		t.Fatalf("keyboard rows = %d, want %d", len(keyboard.InlineKeyboard), 2)
+	}
+
+	if got := keyboard.InlineKeyboard[0][0].CallbackData; got != "device:config:100" {
+		t.Fatalf("config callback data = %q, want %q", got, "device:config:100")
+	}
+
+	if got := keyboard.InlineKeyboard[0][1].CallbackData; got != "device:qr:100" {
+		t.Fatalf("qr callback data = %q, want %q", got, "device:qr:100")
+	}
+
+	if got := keyboard.InlineKeyboard[1][0].CallbackData; got != "device:revoke:100" {
+		t.Fatalf("revoke callback data = %q, want %q", got, "device:revoke:100")
+	}
+
+	if backendClient.listDevicesResult.Devices[1].Status != "revoked" {
+		t.Fatal("test fixture no longer includes a revoked device")
+	}
+}
+
+func TestHandleMessageDevicesEmptyList(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		listDevicesResult: &backendapi.ListDevicesResult{},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/devices",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
 	if len(telegramClient.sentMessages) != 1 {
 		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
 	}
 
-	want := "Your devices:\n\n1. dad-laptop\nStatus: active\nIP: 10.68.0.2\nCreated: 2026-04-15\n\n2. mom-phone\nStatus: revoked\nIP: 10.68.0.3\nCreated: 2026-04-14\nRevoked: 2026-04-16"
+	want := "You have no devices yet.\n\nTap Create device below to add one."
+	if got := telegramClient.sentMessages[0].text; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestHandleMessageDevicesWhenOnlyRevokedDevicesRemain(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		listDevicesResult: &backendapi.ListDevicesResult{
+			Devices: []backendapi.Device{
+				{
+					ID:         101,
+					Name:       "mom-phone",
+					AssignedIP: "10.68.0.3",
+					Status:     "revoked",
+					CreatedAt:  time.Date(2026, 4, 14, 10, 11, 12, 0, time.UTC),
+					RevokedAt:  timePtr(time.Date(2026, 4, 16, 10, 11, 12, 0, time.UTC)),
+				},
+			},
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/devices",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	if len(telegramClient.sentMessages) != 1 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+	}
+
+	want := "You have no active devices right now.\n\nTap Create device below to add a new one."
 	if got := telegramClient.sentMessages[0].text; got != want {
 		t.Fatalf("message = %q, want %q", got, want)
 	}
@@ -211,6 +310,178 @@ func TestHandleMessageDevicesWhenUserNotLinked(t *testing.T) {
 	}
 }
 
+func TestHandleCallbackQueryConfigSuccess(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		resendDeviceConfigResult: &backendapi.ResendDeviceConfigResult{
+			Device: backendapi.Device{
+				ID:         100,
+				Name:       "dad-laptop",
+				AssignedIP: "10.68.0.2",
+				Status:     "active",
+			},
+			ClientConfig: "[Interface]\nPrivateKey = private-key\n",
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleCallbackQuery(context.Background(), &telegram.CallbackQuery{
+		ID:   "cb-1",
+		Data: "device:config:100",
+		From: &telegram.User{ID: 777},
+		Message: &telegram.Message{
+			Chat: telegram.Chat{ID: 99},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleCallbackQuery() error = %v", err)
+	}
+
+	if backendClient.resendDeviceConfigTelegramUserID != 777 || backendClient.resendDeviceConfigDeviceID != 100 {
+		t.Fatalf("backend resend input = (%d, %d), want (%d, %d)", backendClient.resendDeviceConfigTelegramUserID, backendClient.resendDeviceConfigDeviceID, 777, 100)
+	}
+
+	if len(telegramClient.callbackAnswers) != 1 {
+		t.Fatalf("callback answers = %d, want %d", len(telegramClient.callbackAnswers), 1)
+	}
+
+	if got := telegramClient.callbackAnswers[0].text; got != "Morty, hold still. Rebuilding that config." {
+		t.Fatalf("callback answer = %q", got)
+	}
+
+	if len(telegramClient.sentMessages) != 1 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+	}
+
+	if len(telegramClient.sentPhotos) != 0 {
+		t.Fatalf("sent documents = %d, want %d", len(telegramClient.sentPhotos), 0)
+	}
+}
+
+func TestHandleCallbackQueryShowQRSuccess(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		resendDeviceConfigResult: &backendapi.ResendDeviceConfigResult{
+			Device: backendapi.Device{
+				ID:         100,
+				Name:       "dad-laptop",
+				AssignedIP: "10.68.0.2",
+				Status:     "active",
+			},
+			ClientConfig: "[Interface]\nPrivateKey = private-key\n",
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleCallbackQuery(context.Background(), &telegram.CallbackQuery{
+		ID:   "cb-2",
+		Data: "device:qr:100",
+		From: &telegram.User{ID: 777},
+		Message: &telegram.Message{
+			Chat: telegram.Chat{ID: 99},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleCallbackQuery() error = %v", err)
+	}
+
+	if len(telegramClient.callbackAnswers) != 1 {
+		t.Fatalf("callback answers = %d, want %d", len(telegramClient.callbackAnswers), 1)
+	}
+
+	if got := telegramClient.callbackAnswers[0].text; got != "Opening a tiny portal and turning it into a QR code." {
+		t.Fatalf("callback answer = %q", got)
+	}
+
+	if len(telegramClient.sentMessages) != 0 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 0)
+	}
+
+	if len(telegramClient.sentPhotos) != 1 {
+		t.Fatalf("sent documents = %d, want %d", len(telegramClient.sentPhotos), 1)
+	}
+}
+
+func TestHandleCallbackQueryRevokeSuccess(t *testing.T) {
+	revokedAt := time.Date(2026, 4, 16, 10, 11, 12, 0, time.UTC)
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		revokeDeviceResult: &backendapi.RevokeDeviceResult{
+			Device: backendapi.Device{
+				ID:         100,
+				Name:       "dad-laptop",
+				AssignedIP: "10.68.0.2",
+				Status:     "revoked",
+				RevokedAt:  &revokedAt,
+			},
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleCallbackQuery(context.Background(), &telegram.CallbackQuery{
+		ID:   "cb-3",
+		Data: "device:revoke:100",
+		From: &telegram.User{ID: 777},
+		Message: &telegram.Message{
+			Chat: telegram.Chat{ID: 99},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleCallbackQuery() error = %v", err)
+	}
+
+	if len(telegramClient.callbackAnswers) != 1 {
+		t.Fatalf("callback answers = %d, want %d", len(telegramClient.callbackAnswers), 1)
+	}
+
+	if got := telegramClient.callbackAnswers[0].text; got != "Rick is closing this portal and cleaning up the timeline." {
+		t.Fatalf("callback answer = %q", got)
+	}
+
+	if len(telegramClient.sentMessages) != 1 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+	}
+
+	want := "Device revoked successfully.\nName: dad-laptop\nIP: 10.68.0.2\nStatus: revoked\nRevoked: 2026-04-16"
+	if got := telegramClient.sentMessages[0].text; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestHandleCallbackQueryInvalidAction(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleCallbackQuery(context.Background(), &telegram.CallbackQuery{
+		ID:   "cb-4",
+		Data: "nope",
+		From: &telegram.User{ID: 777},
+		Message: &telegram.Message{
+			Chat: telegram.Chat{ID: 99},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleCallbackQuery() error = %v", err)
+	}
+
+	if len(telegramClient.callbackAnswers) != 1 {
+		t.Fatalf("callback answers = %d, want %d", len(telegramClient.callbackAnswers), 1)
+	}
+
+	if got := telegramClient.callbackAnswers[0].text; got != "This action is no longer available." {
+		t.Fatalf("callback answer = %q, want %q", got, "This action is no longer available.")
+	}
+
+	if backendClient.resendDeviceConfigCalls != 0 || backendClient.revokeDeviceCalls != 0 {
+		t.Fatal("backend should not be called for invalid callback data")
+	}
+}
+
 func TestHandleMessageNewDeviceRequiresName(t *testing.T) {
 	telegramClient := &stubTelegramClient{}
 	backendClient := &stubBackendClient{}
@@ -234,8 +505,53 @@ func TestHandleMessageNewDeviceRequiresName(t *testing.T) {
 		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
 	}
 
-	if got := telegramClient.sentMessages[0].text; got != "Usage: /newdevice <device_name>" {
-		t.Fatalf("message = %q, want usage", got)
+	want := "Let's spin up a new device.\n\nHow should we call it?\nExamples: iphone, macbook, dad-phone"
+	if got := telegramClient.sentMessages[0].text; got != want {
+		t.Fatalf("message = %q, want prompt", got)
+	}
+}
+
+func TestHandleMessageNewDeviceTwoStepFlow(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		createDeviceResult: &backendapi.CreateDeviceResult{
+			Device: backendapi.Device{
+				ID:         100,
+				Name:       "iphone",
+				AssignedIP: "10.68.0.2",
+				Status:     "active",
+				CreatedAt:  time.Date(2026, 4, 15, 10, 11, 12, 0, time.UTC),
+			},
+			ClientConfig: "[Interface]\nPrivateKey = private-key\n",
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/newdevice",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("prompt handleMessage() error = %v", err)
+	}
+
+	err = b.handleMessage(context.Background(), &telegram.Message{
+		Text: "iphone",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("name handleMessage() error = %v", err)
+	}
+
+	if backendClient.createDeviceCalls != 1 {
+		t.Fatalf("create device calls = %d, want %d", backendClient.createDeviceCalls, 1)
+	}
+
+	if backendClient.createDeviceName != "iphone" {
+		t.Fatalf("device name = %q, want %q", backendClient.createDeviceName, "iphone")
 	}
 }
 
@@ -287,11 +603,11 @@ func TestHandleMessageNewDeviceMapsBackendErrors(t *testing.T) {
 				t.Fatalf("handleMessage() error = %v", err)
 			}
 
-			if len(telegramClient.sentMessages) != 1 {
-				t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+			if len(telegramClient.sentMessages) != 2 {
+				t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 2)
 			}
 
-			if got := telegramClient.sentMessages[0].text; got != test.wantMessage {
+			if got := telegramClient.sentMessages[1].text; got != test.wantMessage {
 				t.Fatalf("message = %q, want %q", got, test.wantMessage)
 			}
 		})
@@ -714,14 +1030,17 @@ func TestHandleMessageRevokeMapsBackendErrors(t *testing.T) {
 }
 
 type stubTelegramClient struct {
-	sentMessages []sentMessage
-	sentPhotos   []sentPhoto
-	sendPhotoErr error
+	sentMessages    []sentMessage
+	sentPhotos      []sentPhoto
+	callbackAnswers []callbackAnswer
+	sendPhotoErr    error
 }
 
 type sentMessage struct {
-	chatID int64
-	text   string
+	chatID   int64
+	text     string
+	keyboard *telegram.InlineKeyboardMarkup
+	replyKB  *telegram.ReplyKeyboardMarkup
 }
 
 type sentPhoto struct {
@@ -729,6 +1048,11 @@ type sentPhoto struct {
 	fileName string
 	document []byte
 	caption  string
+}
+
+type callbackAnswer struct {
+	id   string
+	text string
 }
 
 func (s *stubTelegramClient) GetUpdates(context.Context, int64, time.Duration) ([]telegram.Update, error) {
@@ -743,6 +1067,26 @@ func (s *stubTelegramClient) SendMessage(_ context.Context, chatID int64, text s
 	return nil
 }
 
+func (s *stubTelegramClient) SendMessageWithInlineKeyboard(_ context.Context, chatID int64, text string, keyboard telegram.InlineKeyboardMarkup) error {
+	keyboardCopy := keyboard
+	s.sentMessages = append(s.sentMessages, sentMessage{
+		chatID:   chatID,
+		text:     text,
+		keyboard: &keyboardCopy,
+	})
+	return nil
+}
+
+func (s *stubTelegramClient) SendMessageWithReplyKeyboard(_ context.Context, chatID int64, text string, keyboard telegram.ReplyKeyboardMarkup) error {
+	keyboardCopy := keyboard
+	s.sentMessages = append(s.sentMessages, sentMessage{
+		chatID:  chatID,
+		text:    text,
+		replyKB: &keyboardCopy,
+	})
+	return nil
+}
+
 func (s *stubTelegramClient) SendDocument(_ context.Context, chatID int64, fileName string, document []byte, caption string) error {
 	if s.sendPhotoErr != nil {
 		return s.sendPhotoErr
@@ -753,6 +1097,14 @@ func (s *stubTelegramClient) SendDocument(_ context.Context, chatID int64, fileN
 		fileName: fileName,
 		document: append([]byte(nil), document...),
 		caption:  caption,
+	})
+	return nil
+}
+
+func (s *stubTelegramClient) AnswerCallbackQuery(_ context.Context, callbackQueryID, text string) error {
+	s.callbackAnswers = append(s.callbackAnswers, callbackAnswer{
+		id:   callbackQueryID,
+		text: text,
 	})
 	return nil
 }
