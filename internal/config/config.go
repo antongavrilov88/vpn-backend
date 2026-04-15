@@ -52,6 +52,7 @@ type CryptoConfig struct {
 type VPNConfig struct {
 	ServerPublicKey     string
 	Endpoint            string
+	ServerTunnelAddress string
 	AllowedIPs          []string
 	DNS                 []string
 	PersistentKeepalive *int
@@ -80,6 +81,8 @@ type BackendAPIConfig struct {
 }
 
 func Load() (Config, error) {
+	ensureDotenvLoaded()
+
 	dbURL := getEnv("DB_URL", "")
 	if dbURL == "" {
 		builtDBURL, err := buildPostgresURL()
@@ -202,6 +205,7 @@ func Load() (Config, error) {
 		VPN: VPNConfig{
 			ServerPublicKey:     getEnv("VPN_SERVER_PUBLIC_KEY", ""),
 			Endpoint:            getEnv("VPN_SERVER_ENDPOINT", ""),
+			ServerTunnelAddress: getEnv("VPN_SERVER_TUNNEL_ADDRESS", ""),
 			AllowedIPs:          getListEnv("VPN_ALLOWED_IPS"),
 			DNS:                 getListEnv("VPN_DNS"),
 			PersistentKeepalive: persistentKeepalive,
@@ -235,6 +239,8 @@ func Load() (Config, error) {
 }
 
 func LoadBot() (BotProcessConfig, error) {
+	ensureDotenvLoaded()
+
 	pollTimeout, err := getDurationEnv("TELEGRAM_POLL_TIMEOUT", 30*time.Second)
 	if err != nil {
 		return BotProcessConfig{}, err

@@ -68,6 +68,7 @@ func run() error {
 					Name:   name,
 				})
 				if err != nil {
+					application.Logger.Error("create device failed", "user_id", userID, "name", name, "error", err)
 					return nil, err
 				}
 

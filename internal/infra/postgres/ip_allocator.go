@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -10,23 +11,37 @@ import (
 )
 
 const (
-	clientSubnetCIDR = "10.67.0.0/24"
-	serverReservedIP = "10.67.0.1"
+	defaultServerTunnelAddress = "10.67.0.1/24"
 )
 
 type IPAllocator struct {
-	db *pgxpool.Pool
+	db               *pgxpool.Pool
+	clientSubnet     netip.Prefix
+	serverReservedIP netip.Addr
 }
 
 var _ domain.IPAllocator = (*IPAllocator)(nil)
 
-func NewIPAllocator(db *pgxpool.Pool) *IPAllocator {
-	return &IPAllocator{db: db}
+type IPAllocatorConfig struct {
+	ServerTunnelAddress string
+}
+
+func NewIPAllocator(db *pgxpool.Pool, cfg IPAllocatorConfig) (*IPAllocator, error) {
+	clientSubnet, serverReservedIP, err := allocatorNetworkConfig(cfg.ServerTunnelAddress)
+	if err != nil {
+		return nil, err
+	}
+
+	return &IPAllocator{
+		db:               db,
+		clientSubnet:     clientSubnet,
+		serverReservedIP: serverReservedIP,
+	}, nil
 }
 
 func (a *IPAllocator) AllocateNext(ctx context.Context) (string, error) {
 	const query = `
-SELECT assigned_ip::text
+SELECT host(assigned_ip)
 FROM devices
 ORDER BY assigned_ip ASC
 `
@@ -57,10 +72,10 @@ ORDER BY assigned_ip ASC
 		return "", err
 	}
 
-	subnet := netip.MustParsePrefix(clientSubnetCIDR)
+	subnet := a.clientSubnet
 	networkIP := subnet.Addr()
 	broadcastIP := lastAddress(subnet)
-	reservedServerIP := netip.MustParseAddr(serverReservedIP)
+	reservedServerIP := a.serverReservedIP
 
 	usedIPs[networkIP] = struct{}{}
 	usedIPs[broadcastIP] = struct{}{}
@@ -81,13 +96,36 @@ ORDER BY assigned_ip ASC
 	return "", domain.ErrIPPoolExhausted
 }
 
+func allocatorNetworkConfig(serverTunnelAddress string) (netip.Prefix, netip.Addr, error) {
+	if serverTunnelAddress == "" {
+		serverTunnelAddress = defaultServerTunnelAddress
+	}
+
+	serverPrefix, err := netip.ParsePrefix(serverTunnelAddress)
+	if err != nil {
+		return netip.Prefix{}, netip.Addr{}, err
+	}
+
+	serverAddr := serverPrefix.Addr()
+	if !serverAddr.Is4() {
+		return netip.Prefix{}, netip.Addr{}, fmt.Errorf("server tunnel address must be IPv4")
+	}
+
+	return serverPrefix.Masked(), serverAddr, nil
+}
+
 func buildUsedIPSet(assignedIPs []string) (map[netip.Addr]struct{}, error) {
 	usedIPs := make(map[netip.Addr]struct{}, len(assignedIPs))
 
 	for _, rawIP := range assignedIPs {
 		addr, err := netip.ParseAddr(rawIP)
 		if err != nil {
-			return nil, err
+			prefix, prefixErr := netip.ParsePrefix(rawIP)
+			if prefixErr != nil {
+				return nil, err
+			}
+
+			addr = prefix.Addr()
 		}
 
 		usedIPs[addr] = struct{}{}

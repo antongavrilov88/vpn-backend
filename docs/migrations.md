@@ -24,7 +24,13 @@ Before using migrations, create a local `.env` file:
 cp .env.example .env
 ```
 
-The Makefile reads `.env` automatically. If `.env` is missing, it falls back to the local development defaults.
+If you want machine-specific overrides without touching `.env`, create:
+
+```bash
+cp .env.local.example .env.local
+```
+
+The Makefile reads `.env.local` and `.env` automatically. Plain `go run ...` follows the same behavior through the config package.
 
 ## Available Commands
 
@@ -51,6 +57,8 @@ Check migration status:
 ```bash
 make migrate-status
 ```
+
+You do not need a globally installed `goose` binary. This repository pins Goose in `go.mod` and runs it through `go tool goose` under the hood.
 
 When the `migrations/` directory is still empty, the status, up, and down targets print a clear message and exit successfully.
 
@@ -113,5 +121,4 @@ make migrate-down
 ## Notes
 
 - This setup is for local development only.
-- No schema migrations are added in this task.
 - No backend container is required for running migrations.

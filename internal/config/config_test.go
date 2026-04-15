@@ -24,6 +24,7 @@ func TestLoad(t *testing.T) {
 	t.Setenv("DEVICE_PRIVATE_KEY_CIPHER_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
 	t.Setenv("VPN_SERVER_PUBLIC_KEY", "server-public-key")
 	t.Setenv("VPN_SERVER_ENDPOINT", "vpn.example.com:51820")
+	t.Setenv("VPN_SERVER_TUNNEL_ADDRESS", "10.68.0.1/24")
 	t.Setenv("VPN_ALLOWED_IPS", "0.0.0.0/0, ::/0")
 	t.Setenv("VPN_DNS", "1.1.1.1,8.8.8.8")
 	t.Setenv("VPN_PERSISTENT_KEEPALIVE", "25")
@@ -107,6 +108,10 @@ func TestLoad(t *testing.T) {
 
 	if cfg.VPN.Endpoint != "vpn.example.com:51820" {
 		t.Fatalf("VPN.Endpoint = %q, want %q", cfg.VPN.Endpoint, "vpn.example.com:51820")
+	}
+
+	if cfg.VPN.ServerTunnelAddress != "10.68.0.1/24" {
+		t.Fatalf("VPN.ServerTunnelAddress = %q, want %q", cfg.VPN.ServerTunnelAddress, "10.68.0.1/24")
 	}
 
 	if len(cfg.VPN.AllowedIPs) != 2 || cfg.VPN.AllowedIPs[0] != "0.0.0.0/0" || cfg.VPN.AllowedIPs[1] != "::/0" {
