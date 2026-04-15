@@ -94,6 +94,18 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) erro
 		return nil
 	}
 
+	telegramUserID := int64(0)
+	if message.From != nil {
+		telegramUserID = message.From.ID
+	}
+
+	b.logger.Info(
+		"handle telegram command",
+		"command", fields[0],
+		"chat_id", message.Chat.ID,
+		"telegram_user_id", telegramUserID,
+	)
+
 	switch fields[0] {
 	case "/start":
 		return b.telegram.SendMessage(ctx, message.Chat.ID, b.startMessage(ctx))
