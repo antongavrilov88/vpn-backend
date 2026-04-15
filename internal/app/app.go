@@ -128,7 +128,12 @@ func newCreateDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*CreateDeviceU
 		return nil, fmt.Errorf("create private key cipher: %w", err)
 	}
 
-	ipAllocator := postgres.NewIPAllocator(db)
+	ipAllocator, err := postgres.NewIPAllocator(db, postgres.IPAllocatorConfig{
+		ServerTunnelAddress: cfg.VPN.ServerTunnelAddress,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create ip allocator: %w", err)
+	}
 
 	clientConfigBuilder, err := wireguard.NewClientConfigBuilder(wireguard.ClientConfigBuilderConfig{
 		ServerPublicKey:     cfg.VPN.ServerPublicKey,

@@ -48,7 +48,7 @@ Argument order:
 Expected meaning:
 
 - `<public_key>`: WireGuard client public key in standard base64 form
-- `<assigned_ip>`: single allocated client tunnel IP, for example `10.67.0.2`
+- `<assigned_ip>`: peer route in CIDR form, for example `10.68.0.2/32`
 
 Expected behavior:
 

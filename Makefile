@@ -3,6 +3,11 @@ include .env
 export
 endif
 
+ifneq (,$(wildcard .env.local))
+include .env.local
+export
+endif
+
 POSTGRES_HOST ?= localhost
 POSTGRES_PORT ?= 5433
 POSTGRES_DB ?= vpn_mvp

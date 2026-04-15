@@ -26,6 +26,12 @@ go.work.sum
 
 # env file
 .env
+.env.local
+
+# local build and OS artifacts
+.cache/
+.DS_Store
+/api
 
 # Editor/IDE
 # .idea/

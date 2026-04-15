@@ -98,7 +98,7 @@ func (t *Transport) CreatePeer(ctx context.Context, input domain.CreatePeerInput
 		return nil, err
 	}
 
-	command := shellCommand(t.addPeerCommand, publicKey, assignedIP)
+	command := shellCommand(t.addPeerCommand, publicKey, peerRoute(assignedIP))
 	if err := t.run(ctx, command); err != nil {
 		return nil, fmt.Errorf("create peer: %w", err)
 	}
@@ -220,6 +220,11 @@ func validatePeerInput(publicKey, assignedIP string) (string, string, error) {
 	}
 
 	return publicKey, addr.String(), nil
+}
+
+func peerRoute(assignedIP string) string {
+	addr := netip.MustParseAddr(assignedIP)
+	return netip.PrefixFrom(addr, 32).String()
 }
 
 func shellCommand(command string, args ...string) string {

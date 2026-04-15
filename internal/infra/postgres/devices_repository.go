@@ -20,7 +20,7 @@ user_id,
 name,
 public_key,
 encrypted_private_key,
-assigned_ip,
+host(assigned_ip) AS assigned_ip,
 status,
 created_at,
 revoked_at
