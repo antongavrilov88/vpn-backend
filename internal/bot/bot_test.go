@@ -80,6 +80,137 @@ func TestHandleMessageNewDeviceSuccess(t *testing.T) {
 	}
 }
 
+func TestHandleMessageStartWhenBackendHealthy(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/start",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	if backendClient.healthCalls != 1 {
+		t.Fatalf("health calls = %d, want %d", backendClient.healthCalls, 1)
+	}
+
+	if len(telegramClient.sentMessages) != 1 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+	}
+
+	want := "VPN bot is connected and backend API is reachable.\n\nUse /help to see available commands."
+	if got := telegramClient.sentMessages[0].text; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestHandleMessageStartWhenBackendUnavailable(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{healthErr: errors.New("timeout")}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/start",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	if len(telegramClient.sentMessages) != 1 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+	}
+
+	want := "VPN bot is connected, but backend API is temporarily unavailable.\n\nUse /help to see available commands."
+	if got := telegramClient.sentMessages[0].text; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestHandleMessageDevicesSuccess(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		listDevicesResult: &backendapi.ListDevicesResult{
+			Devices: []backendapi.Device{
+				{
+					ID:         100,
+					Name:       "dad-laptop",
+					AssignedIP: "10.68.0.2",
+					Status:     "active",
+					CreatedAt:  time.Date(2026, 4, 15, 10, 11, 12, 0, time.UTC),
+				},
+				{
+					ID:         101,
+					Name:       "mom-phone",
+					AssignedIP: "10.68.0.3",
+					Status:     "revoked",
+					CreatedAt:  time.Date(2026, 4, 14, 10, 11, 12, 0, time.UTC),
+					RevokedAt:  timePtr(time.Date(2026, 4, 16, 10, 11, 12, 0, time.UTC)),
+				},
+			},
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/devices",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	if backendClient.listDevicesCalls != 1 {
+		t.Fatalf("list device calls = %d, want %d", backendClient.listDevicesCalls, 1)
+	}
+
+	if backendClient.listDevicesTelegramUserID != 777 {
+		t.Fatalf("telegram user id = %d, want %d", backendClient.listDevicesTelegramUserID, 777)
+	}
+
+	if len(telegramClient.sentMessages) != 1 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+	}
+
+	want := "Your devices:\n\n1. dad-laptop\nStatus: active\nIP: 10.68.0.2\nCreated: 2026-04-15\n\n2. mom-phone\nStatus: revoked\nIP: 10.68.0.3\nCreated: 2026-04-14\nRevoked: 2026-04-16"
+	if got := telegramClient.sentMessages[0].text; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestHandleMessageDevicesWhenUserNotLinked(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{listDevicesErr: backendapi.ErrNotFound}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/devices",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	if len(telegramClient.sentMessages) != 1 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+	}
+
+	if got := telegramClient.sentMessages[0].text; got != "You are not linked to a VPN user yet." {
+		t.Fatalf("message = %q, want not linked message", got)
+	}
+}
+
 func TestHandleMessageNewDeviceRequiresName(t *testing.T) {
 	telegramClient := &stubTelegramClient{}
 	backendClient := &stubBackendClient{}
@@ -627,6 +758,12 @@ func (s *stubTelegramClient) SendDocument(_ context.Context, chatID int64, fileN
 }
 
 type stubBackendClient struct {
+	healthCalls                      int
+	healthErr                        error
+	listDevicesCalls                 int
+	listDevicesTelegramUserID        int64
+	listDevicesResult                *backendapi.ListDevicesResult
+	listDevicesErr                   error
 	createDeviceCalls                int
 	createDeviceTelegramUserID       int64
 	createDeviceName                 string
@@ -645,11 +782,14 @@ type stubBackendClient struct {
 }
 
 func (s *stubBackendClient) Health(context.Context) error {
-	return nil
+	s.healthCalls++
+	return s.healthErr
 }
 
-func (s *stubBackendClient) ListDevices(context.Context, int64) (*backendapi.ListDevicesResult, error) {
-	return nil, nil
+func (s *stubBackendClient) ListDevices(_ context.Context, telegramUserID int64) (*backendapi.ListDevicesResult, error) {
+	s.listDevicesCalls++
+	s.listDevicesTelegramUserID = telegramUserID
+	return s.listDevicesResult, s.listDevicesErr
 }
 
 func (s *stubBackendClient) CreateDevice(_ context.Context, telegramUserID int64, name string) (*backendapi.CreateDeviceResult, error) {
@@ -671,4 +811,8 @@ func (s *stubBackendClient) RevokeDevice(_ context.Context, telegramUserID, devi
 	s.revokeDeviceTelegramUserID = telegramUserID
 	s.revokeDeviceDeviceID = deviceID
 	return s.revokeDeviceResult, s.revokeDeviceErr
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
 }
