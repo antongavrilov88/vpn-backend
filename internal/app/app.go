@@ -22,6 +22,7 @@ type App struct {
 	Config             config.Config
 	Logger             *slog.Logger
 	DB                 *pgxpool.Pool
+	EnsureTelegramUser *EnsureTelegramUserUseCase
 	CreateDevice       *CreateDeviceUseCase
 	ListUserDevices    *ListUserDevicesUseCase
 	ResendDeviceConfig *ResendDeviceConfigUseCase
@@ -40,6 +41,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		db.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
+	ensureTelegramUser := newEnsureTelegramUserUseCase(db)
 	createDevice, err := newCreateDeviceUseCase(cfg, db)
 	if err != nil {
 		db.Close()
@@ -61,6 +63,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		Config:             cfg,
 		Logger:             log,
 		DB:                 db,
+		EnsureTelegramUser: ensureTelegramUser,
 		CreateDevice:       createDevice,
 		ListUserDevices:    listUserDevices,
 		ResendDeviceConfig: resendDeviceConfig,
@@ -224,6 +227,12 @@ func newListUserDevicesUseCase(db *pgxpool.Pool) *ListUserDevicesUseCase {
 	return NewListUserDevicesUseCase(
 		postgres.NewUserRepository(db),
 		postgres.NewDeviceRepository(db),
+	)
+}
+
+func newEnsureTelegramUserUseCase(db *pgxpool.Pool) *EnsureTelegramUserUseCase {
+	return NewEnsureTelegramUserUseCase(
+		postgres.NewUserRepository(db),
 	)
 }
 

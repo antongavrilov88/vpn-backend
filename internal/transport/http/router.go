@@ -20,6 +20,7 @@ type HealthChecker interface {
 }
 
 type ResolveTelegramUserIDFunc func(ctx context.Context, telegramUserID int64) (int64, error)
+type EnsureTelegramUserFunc func(ctx context.Context, telegramUserID int64, username string) (*EnsureTelegramUserResult, error)
 type CreateDeviceFunc func(ctx context.Context, userID int64, name string) (*CreateDeviceResult, error)
 type ListUserDevicesFunc func(ctx context.Context, callerUserID int64) (*ListUserDevicesResult, error)
 type ResendDeviceConfigFunc func(ctx context.Context, userID, deviceID int64) (*ResendDeviceConfigResult, error)
@@ -28,6 +29,7 @@ type RevokeDeviceFunc func(ctx context.Context, userID, deviceID int64) (*Revoke
 type Dependencies struct {
 	HealthChecker         HealthChecker
 	ResolveTelegramUserID ResolveTelegramUserIDFunc
+	EnsureTelegramUser    EnsureTelegramUserFunc
 	CreateDevice          CreateDeviceFunc
 	ListUserDevices       ListUserDevicesFunc
 	ResendDeviceConfig    ResendDeviceConfigFunc
@@ -46,9 +48,22 @@ type Device struct {
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 }
 
+type User struct {
+	ID         int64     `json:"id"`
+	TelegramID *int64    `json:"telegram_id,omitempty"`
+	Username   string    `json:"username"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 type CreateDeviceResult struct {
 	Device       Device `json:"device"`
 	ClientConfig string `json:"client_config"`
+}
+
+type EnsureTelegramUserResult struct {
+	User User `json:"user"`
 }
 
 type ListUserDevicesResult struct {
@@ -74,6 +89,10 @@ type errorResponse struct {
 
 type createDeviceRequest struct {
 	Name string `json:"name"`
+}
+
+type ensureTelegramUserRequest struct {
+	Username string `json:"username"`
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -118,7 +137,38 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Post("/{id}/revoke", revokeDeviceHandler(deps))
 	})
 
+	router.Route("/telegram", func(r chi.Router) {
+		r.Post("/session", ensureTelegramUserHandler(deps))
+	})
+
 	return router
+}
+
+func ensureTelegramUserHandler(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps.EnsureTelegramUser == nil {
+			writeError(w, http.StatusServiceUnavailable, "telegram session bootstrap is not configured")
+			return
+		}
+
+		telegramUserID, ok := telegramUserIDFromHeader(w, r)
+		if !ok {
+			return
+		}
+
+		request, ok := decodeEnsureTelegramUserRequest(w, r)
+		if !ok {
+			return
+		}
+
+		result, err := deps.EnsureTelegramUser(r.Context(), telegramUserID, request.Username)
+		if err != nil {
+			writeUseCaseError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, result)
+	}
 }
 
 func createDeviceHandler(deps Dependencies) http.HandlerFunc {
@@ -128,7 +178,7 @@ func createDeviceHandler(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
-		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID)
+		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID, deps.EnsureTelegramUser)
 		if !ok {
 			return
 		}
@@ -167,7 +217,7 @@ func listUserDevicesHandler(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
-		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID)
+		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID, deps.EnsureTelegramUser)
 		if !ok {
 			return
 		}
@@ -189,7 +239,7 @@ func resendDeviceConfigHandler(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
-		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID)
+		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID, deps.EnsureTelegramUser)
 		if !ok {
 			return
 		}
@@ -216,7 +266,7 @@ func revokeDeviceHandler(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
-		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID)
+		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID, deps.EnsureTelegramUser)
 		if !ok {
 			return
 		}
@@ -236,7 +286,12 @@ func revokeDeviceHandler(deps Dependencies) http.HandlerFunc {
 	}
 }
 
-func userIDFromRequest(w http.ResponseWriter, r *http.Request, resolveTelegramUserID ResolveTelegramUserIDFunc) (int64, bool) {
+func userIDFromRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+	resolveTelegramUserID ResolveTelegramUserIDFunc,
+	ensureTelegramUser EnsureTelegramUserFunc,
+) (int64, bool) {
 	value := r.Header.Get("X-User-ID")
 	if value != "" {
 		userID, err := strconv.ParseInt(value, 10, 64)
@@ -248,21 +303,21 @@ func userIDFromRequest(w http.ResponseWriter, r *http.Request, resolveTelegramUs
 		return userID, true
 	}
 
-	telegramValue := r.Header.Get("X-Telegram-ID")
-	if telegramValue == "" {
-		writeError(w, http.StatusBadRequest, "X-User-ID or X-Telegram-ID header is required")
-		return 0, false
-	}
-
 	if resolveTelegramUserID == nil {
 		writeError(w, http.StatusServiceUnavailable, "telegram identity is not configured")
 		return 0, false
 	}
 
-	telegramUserID, err := strconv.ParseInt(telegramValue, 10, 64)
-	if err != nil || telegramUserID <= 0 {
-		writeError(w, http.StatusBadRequest, "invalid X-Telegram-ID header")
+	telegramUserID, ok := telegramUserIDFromHeader(w, r)
+	if !ok {
 		return 0, false
+	}
+
+	if ensureTelegramUser != nil {
+		if _, err := ensureTelegramUser(r.Context(), telegramUserID, ""); err != nil {
+			writeUseCaseError(w, err)
+			return 0, false
+		}
 	}
 
 	userID, err := resolveTelegramUserID(r.Context(), telegramUserID)
@@ -272,6 +327,48 @@ func userIDFromRequest(w http.ResponseWriter, r *http.Request, resolveTelegramUs
 	}
 
 	return userID, true
+}
+
+func telegramUserIDFromHeader(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	telegramValue := r.Header.Get("X-Telegram-ID")
+	if telegramValue == "" {
+		writeError(w, http.StatusBadRequest, "X-User-ID or X-Telegram-ID header is required")
+		return 0, false
+	}
+
+	telegramUserID, err := strconv.ParseInt(telegramValue, 10, 64)
+	if err != nil || telegramUserID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid X-Telegram-ID header")
+		return 0, false
+	}
+
+	return telegramUserID, true
+}
+
+func decodeEnsureTelegramUserRequest(w http.ResponseWriter, r *http.Request) (ensureTelegramUserRequest, bool) {
+	if r.Body == nil {
+		return ensureTelegramUserRequest{}, true
+	}
+
+	var request ensureTelegramUserRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&request); err != nil {
+		if errors.Is(err, io.EOF) {
+			return ensureTelegramUserRequest{}, true
+		}
+
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return ensureTelegramUserRequest{}, false
+	}
+
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return ensureTelegramUserRequest{}, false
+	}
+
+	return request, true
 }
 
 func deviceIDFromRoute(w http.ResponseWriter, r *http.Request) (int64, bool) {

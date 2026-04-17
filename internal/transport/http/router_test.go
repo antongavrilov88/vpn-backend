@@ -83,6 +83,13 @@ type stubCreateDeviceUseCase struct {
 	err    error
 }
 
+type stubEnsureTelegramUserUseCase struct {
+	telegramUserID int64
+	username       string
+	result         *EnsureTelegramUserResult
+	err            error
+}
+
 type stubResolveTelegramUserID struct {
 	telegramUserID int64
 	userID         int64
@@ -97,6 +104,12 @@ func (s *stubResolveTelegramUserID) Execute(_ context.Context, telegramUserID in
 func (s *stubCreateDeviceUseCase) Execute(_ context.Context, userID int64, name string) (*CreateDeviceResult, error) {
 	s.userID = userID
 	s.name = name
+	return s.result, s.err
+}
+
+func (s *stubEnsureTelegramUserUseCase) Execute(_ context.Context, telegramUserID int64, username string) (*EnsureTelegramUserResult, error) {
+	s.telegramUserID = telegramUserID
+	s.username = username
 	return s.result, s.err
 }
 
@@ -185,6 +198,54 @@ func TestNewRouterCreateDeviceHappyPath(t *testing.T) {
 	}
 }
 
+func TestNewRouterEnsureTelegramUserHappyPath(t *testing.T) {
+	useCase := &stubEnsureTelegramUserUseCase{
+		result: &EnsureTelegramUserResult{
+			User: User{
+				ID:         42,
+				TelegramID: int64Ptr(777),
+				Username:   "anton",
+				Status:     "active",
+				CreatedAt:  time.Date(2026, 4, 2, 10, 11, 12, 0, time.UTC),
+				UpdatedAt:  time.Date(2026, 4, 2, 10, 11, 12, 0, time.UTC),
+			},
+		},
+	}
+
+	router := NewRouter(Dependencies{
+		EnsureTelegramUser: useCase.Execute,
+		RequestTimeout:     5 * time.Second,
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/telegram/session", strings.NewReader(`{"username":"anton"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Telegram-ID", "777")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+
+	if useCase.telegramUserID != 777 {
+		t.Fatalf("telegram user id = %d, want %d", useCase.telegramUserID, 777)
+	}
+
+	if useCase.username != "anton" {
+		t.Fatalf("username = %q, want %q", useCase.username, "anton")
+	}
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"telegram_id":777`) {
+		t.Fatalf("body = %q, want telegram_id", body)
+	}
+
+	if !strings.Contains(body, `"username":"anton"`) {
+		t.Fatalf("body = %q, want username", body)
+	}
+}
+
 func TestNewRouterRevokeDeviceMapsNotFound(t *testing.T) {
 	useCase := &stubRevokeDeviceUseCase{
 		err: domain.ErrNotFound,
@@ -216,6 +277,15 @@ func TestNewRouterRevokeDeviceMapsNotFound(t *testing.T) {
 
 func TestNewRouterListDevicesResolvesTelegramIdentity(t *testing.T) {
 	resolver := &stubResolveTelegramUserID{userID: 42}
+	ensureUser := &stubEnsureTelegramUserUseCase{
+		result: &EnsureTelegramUserResult{
+			User: User{
+				ID:         42,
+				TelegramID: int64Ptr(777),
+				Status:     "active",
+			},
+		},
+	}
 	useCase := &stubListUserDevicesUseCase{
 		result: &ListUserDevicesResult{
 			Devices: []Device{
@@ -232,6 +302,7 @@ func TestNewRouterListDevicesResolvesTelegramIdentity(t *testing.T) {
 
 	router := NewRouter(Dependencies{
 		ResolveTelegramUserID: resolver.Execute,
+		EnsureTelegramUser:    ensureUser.Execute,
 		ListUserDevices:       useCase.Execute,
 		RequestTimeout:        5 * time.Second,
 	})
@@ -250,6 +321,14 @@ func TestNewRouterListDevicesResolvesTelegramIdentity(t *testing.T) {
 		t.Fatalf("telegram user id = %d, want %d", resolver.telegramUserID, 777)
 	}
 
+	if ensureUser.telegramUserID != 777 {
+		t.Fatalf("ensured telegram user id = %d, want %d", ensureUser.telegramUserID, 777)
+	}
+
+	if ensureUser.username != "" {
+		t.Fatalf("ensured username = %q, want empty string", ensureUser.username)
+	}
+
 	if useCase.userID != 42 {
 		t.Fatalf("resolved user id = %d, want %d", useCase.userID, 42)
 	}
@@ -257,4 +336,8 @@ func TestNewRouterListDevicesResolvesTelegramIdentity(t *testing.T) {
 	if body := recorder.Body.String(); !strings.Contains(body, `"devices":[`) {
 		t.Fatalf("body = %q, want devices payload", body)
 	}
+}
+
+func int64Ptr(value int64) *int64 {
+	return &value
 }

@@ -58,6 +58,23 @@ func run() error {
 
 				return user.ID, nil
 			},
+			EnsureTelegramUser: func(ctx context.Context, telegramUserID int64, username string) (*apphttp.EnsureTelegramUserResult, error) {
+				if application.EnsureTelegramUser == nil {
+					return nil, fmt.Errorf("ensure telegram user is not configured")
+				}
+
+				result, err := application.EnsureTelegramUser.Execute(ctx, app.EnsureTelegramUserInput{
+					TelegramUserID: telegramUserID,
+					Username:       username,
+				})
+				if err != nil {
+					return nil, err
+				}
+
+				return &apphttp.EnsureTelegramUserResult{
+					User: toHTTPUser(result.User),
+				}, nil
+			},
 			CreateDevice: func(ctx context.Context, userID int64, name string) (*apphttp.CreateDeviceResult, error) {
 				if application.CreateDevice == nil {
 					return nil, fmt.Errorf("create device is not configured")
@@ -196,5 +213,20 @@ func toHTTPDevice(device *domain.Device) apphttp.Device {
 		Status:     string(device.Status),
 		CreatedAt:  device.CreatedAt,
 		RevokedAt:  device.RevokedAt,
+	}
+}
+
+func toHTTPUser(user *domain.User) apphttp.User {
+	if user == nil {
+		return apphttp.User{}
+	}
+
+	return apphttp.User{
+		ID:         user.ID,
+		TelegramID: user.TelegramID,
+		Username:   user.Username,
+		Status:     string(user.Status),
+		CreatedAt:  user.CreatedAt,
+		UpdatedAt:  user.UpdatedAt,
 	}
 }
