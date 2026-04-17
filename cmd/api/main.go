@@ -75,6 +75,35 @@ func run() error {
 					User: toHTTPUser(result.User),
 				}, nil
 			},
+			GetAccessStatus: func(ctx context.Context, userID int64) (*apphttp.AccessStatusResult, error) {
+				if application.GetAccessStatus == nil {
+					return nil, fmt.Errorf("get access status is not configured")
+				}
+
+				result, err := application.GetAccessStatus.Execute(ctx, app.GetAccessStatusInput{
+					UserID: userID,
+				})
+				if err != nil {
+					return nil, err
+				}
+
+				return toHTTPAccessStatus(result), nil
+			},
+			ApplyInviteCode: func(ctx context.Context, userID int64, code string) (*apphttp.AccessStatusResult, error) {
+				if application.ApplyInviteCode == nil {
+					return nil, fmt.Errorf("apply invite code is not configured")
+				}
+
+				result, err := application.ApplyInviteCode.Execute(ctx, app.ApplyInviteCodeInput{
+					UserID: userID,
+					Code:   code,
+				})
+				if err != nil {
+					return nil, err
+				}
+
+				return toHTTPAccessStatus(result), nil
+			},
 			CreateDevice: func(ctx context.Context, userID int64, name string) (*apphttp.CreateDeviceResult, error) {
 				if application.CreateDevice == nil {
 					return nil, fmt.Errorf("create device is not configured")
@@ -228,5 +257,19 @@ func toHTTPUser(user *domain.User) apphttp.User {
 		Status:     string(user.Status),
 		CreatedAt:  user.CreatedAt,
 		UpdatedAt:  user.UpdatedAt,
+	}
+}
+
+func toHTTPAccessStatus(result *app.AccessStatusResult) *apphttp.AccessStatusResult {
+	if result == nil {
+		return &apphttp.AccessStatusResult{}
+	}
+
+	return &apphttp.AccessStatusResult{
+		AccessActive:    result.AccessActive,
+		IsLifetime:      result.IsLifetime,
+		ExpiresAt:       result.ExpiresAt,
+		CanCreateDevice: result.CanCreateDevice,
+		DenialReason:    string(result.DenialReason),
 	}
 }

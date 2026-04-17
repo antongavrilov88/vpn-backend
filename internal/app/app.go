@@ -23,6 +23,8 @@ type App struct {
 	Logger             *slog.Logger
 	DB                 *pgxpool.Pool
 	EnsureTelegramUser *EnsureTelegramUserUseCase
+	GetAccessStatus    *GetAccessStatusUseCase
+	ApplyInviteCode    *ApplyInviteCodeUseCase
 	CreateDevice       *CreateDeviceUseCase
 	ListUserDevices    *ListUserDevicesUseCase
 	ResendDeviceConfig *ResendDeviceConfigUseCase
@@ -42,6 +44,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 	ensureTelegramUser := newEnsureTelegramUserUseCase(db)
+	getAccessStatus := newGetAccessStatusUseCase(db)
+	applyInviteCode := newApplyInviteCodeUseCase(db)
 	createDevice, err := newCreateDeviceUseCase(cfg, db)
 	if err != nil {
 		db.Close()
@@ -64,6 +68,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		Logger:             log,
 		DB:                 db,
 		EnsureTelegramUser: ensureTelegramUser,
+		GetAccessStatus:    getAccessStatus,
+		ApplyInviteCode:    applyInviteCode,
 		CreateDevice:       createDevice,
 		ListUserDevices:    listUserDevices,
 		ResendDeviceConfig: resendDeviceConfig,
@@ -233,6 +239,20 @@ func newListUserDevicesUseCase(db *pgxpool.Pool) *ListUserDevicesUseCase {
 func newEnsureTelegramUserUseCase(db *pgxpool.Pool) *EnsureTelegramUserUseCase {
 	return NewEnsureTelegramUserUseCase(
 		postgres.NewUserRepository(db),
+	)
+}
+
+func newGetAccessStatusUseCase(db *pgxpool.Pool) *GetAccessStatusUseCase {
+	return NewGetAccessStatusUseCase(
+		postgres.NewUserRepository(db),
+		postgres.NewSubscriptionRepository(db),
+	)
+}
+
+func newApplyInviteCodeUseCase(db *pgxpool.Pool) *ApplyInviteCodeUseCase {
+	return NewApplyInviteCodeUseCase(
+		postgres.NewUserRepository(db),
+		postgres.NewInviteCodeGrantor(db),
 	)
 }
 

@@ -44,6 +44,14 @@ type EnsureTelegramSessionResult struct {
 	User User `json:"user"`
 }
 
+type AccessStatusResult struct {
+	AccessActive    bool       `json:"access_active"`
+	IsLifetime      bool       `json:"is_lifetime"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	CanCreateDevice bool       `json:"can_create_device"`
+	DenialReason    string     `json:"denial_reason,omitempty"`
+}
+
 type ListDevicesResult struct {
 	Devices []Device `json:"devices"`
 }
@@ -142,6 +150,66 @@ func (c *Client) ListDevices(ctx context.Context, telegramUserID int64) (*ListDe
 	var result ListDevicesResult
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode backend devices response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (c *Client) GetAccessStatus(ctx context.Context, telegramUserID int64) (*AccessStatusResult, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/access", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build access status request: %w", err)
+	}
+	request.Header.Set("X-Telegram-ID", strconv.FormatInt(telegramUserID, 10))
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("call backend access status: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return nil, decodeAPIError(response.Body, response.StatusCode)
+	}
+
+	var result AccessStatusResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode backend access status response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (c *Client) ApplyInviteCode(ctx context.Context, telegramUserID int64, code string) (*AccessStatusResult, error) {
+	requestBody, err := json.Marshal(struct {
+		Code string `json:"code"`
+	}{
+		Code: code,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode apply invite code request: %w", err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/access/apply-invite-code", bytes.NewReader(requestBody))
+	if err != nil {
+		return nil, fmt.Errorf("build apply invite code request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Telegram-ID", strconv.FormatInt(telegramUserID, 10))
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("call backend apply invite code: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return nil, decodeAPIError(response.Body, response.StatusCode)
+	}
+
+	var result AccessStatusResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode backend apply invite code response: %w", err)
 	}
 
 	return &result, nil

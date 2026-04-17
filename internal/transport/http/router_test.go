@@ -90,6 +90,19 @@ type stubEnsureTelegramUserUseCase struct {
 	err            error
 }
 
+type stubGetAccessStatusUseCase struct {
+	userID int64
+	result *AccessStatusResult
+	err    error
+}
+
+type stubApplyInviteCodeUseCase struct {
+	userID int64
+	code   string
+	result *AccessStatusResult
+	err    error
+}
+
 type stubResolveTelegramUserID struct {
 	telegramUserID int64
 	userID         int64
@@ -110,6 +123,17 @@ func (s *stubCreateDeviceUseCase) Execute(_ context.Context, userID int64, name 
 func (s *stubEnsureTelegramUserUseCase) Execute(_ context.Context, telegramUserID int64, username string) (*EnsureTelegramUserResult, error) {
 	s.telegramUserID = telegramUserID
 	s.username = username
+	return s.result, s.err
+}
+
+func (s *stubGetAccessStatusUseCase) Execute(_ context.Context, userID int64) (*AccessStatusResult, error) {
+	s.userID = userID
+	return s.result, s.err
+}
+
+func (s *stubApplyInviteCodeUseCase) Execute(_ context.Context, userID int64, code string) (*AccessStatusResult, error) {
+	s.userID = userID
+	s.code = code
 	return s.result, s.err
 }
 
@@ -243,6 +267,125 @@ func TestNewRouterEnsureTelegramUserHappyPath(t *testing.T) {
 
 	if !strings.Contains(body, `"username":"anton"`) {
 		t.Fatalf("body = %q, want username", body)
+	}
+}
+
+func TestNewRouterAccessStatusHappyPath(t *testing.T) {
+	resolver := &stubResolveTelegramUserID{userID: 42}
+	ensureUser := &stubEnsureTelegramUserUseCase{
+		result: &EnsureTelegramUserResult{
+			User: User{ID: 42, TelegramID: int64Ptr(777), Status: "active"},
+		},
+	}
+	useCase := &stubGetAccessStatusUseCase{
+		result: &AccessStatusResult{
+			AccessActive:    true,
+			IsLifetime:      true,
+			CanCreateDevice: true,
+		},
+	}
+
+	router := NewRouter(Dependencies{
+		ResolveTelegramUserID: resolver.Execute,
+		EnsureTelegramUser:    ensureUser.Execute,
+		GetAccessStatus:       useCase.Execute,
+		RequestTimeout:        5 * time.Second,
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/access", nil)
+	request.Header.Set("X-Telegram-ID", "777")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+
+	if useCase.userID != 42 {
+		t.Fatalf("user id = %d, want %d", useCase.userID, 42)
+	}
+
+	if body := recorder.Body.String(); !strings.Contains(body, `"access_active":true`) {
+		t.Fatalf("body = %q, want access_active", body)
+	}
+}
+
+func TestNewRouterApplyInviteCodeHappyPath(t *testing.T) {
+	resolver := &stubResolveTelegramUserID{userID: 42}
+	ensureUser := &stubEnsureTelegramUserUseCase{
+		result: &EnsureTelegramUserResult{
+			User: User{ID: 42, TelegramID: int64Ptr(777), Status: "active"},
+		},
+	}
+	useCase := &stubApplyInviteCodeUseCase{
+		result: &AccessStatusResult{
+			AccessActive:    true,
+			IsLifetime:      false,
+			CanCreateDevice: true,
+		},
+	}
+
+	router := NewRouter(Dependencies{
+		ResolveTelegramUserID: resolver.Execute,
+		EnsureTelegramUser:    ensureUser.Execute,
+		ApplyInviteCode:       useCase.Execute,
+		RequestTimeout:        5 * time.Second,
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/access/apply-invite-code", strings.NewReader(`{"code":"BETA-ANTON"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Telegram-ID", "777")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+
+	if useCase.userID != 42 {
+		t.Fatalf("user id = %d, want %d", useCase.userID, 42)
+	}
+
+	if useCase.code != "BETA-ANTON" {
+		t.Fatalf("code = %q, want %q", useCase.code, "BETA-ANTON")
+	}
+}
+
+func TestNewRouterApplyInviteCodeRejectsWhitespaceOnlyCode(t *testing.T) {
+	resolver := &stubResolveTelegramUserID{userID: 42}
+	ensureUser := &stubEnsureTelegramUserUseCase{
+		result: &EnsureTelegramUserResult{
+			User: User{ID: 42, TelegramID: int64Ptr(777), Status: "active"},
+		},
+	}
+	useCase := &stubApplyInviteCodeUseCase{}
+
+	router := NewRouter(Dependencies{
+		ResolveTelegramUserID: resolver.Execute,
+		EnsureTelegramUser:    ensureUser.Execute,
+		ApplyInviteCode:       useCase.Execute,
+		RequestTimeout:        5 * time.Second,
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/access/apply-invite-code", strings.NewReader(`{"code":"   "}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Telegram-ID", "777")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+
+	if useCase.code != "" {
+		t.Fatalf("use case code = %q, want empty because handler should reject request", useCase.code)
+	}
+
+	if body := recorder.Body.String(); body != "{\"error\":\"code is required\"}\n" {
+		t.Fatalf("body = %q, want code required error", body)
 	}
 }
 

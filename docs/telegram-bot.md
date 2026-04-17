@@ -59,8 +59,16 @@ The bot currently supports:
 - `/help`
 - `/devices`
 - `/newdevice`
+- `/promo <code>`
 - `/config <device_id>`
 - `/revoke <device_id>`
+
+Closed-beta onboarding is invite-code based:
+
+- `/start` checks current access state through backend
+- if access is inactive, the bot explains the state and offers invite-code entry
+- users can tap `Enter invite code` or send `/promo <code>`
+- after successful activation, normal device flows unlock through backend access checks
 
 For normal device management, `/devices` is the primary flow:
 
@@ -81,6 +89,7 @@ The bot also keeps a persistent reply keyboard with:
 
 - `My devices`
 - `Create device`
+- `Enter invite code`
 - `Help`
 
 The bot is a thin client over backend API:

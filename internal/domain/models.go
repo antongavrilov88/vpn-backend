@@ -41,8 +41,21 @@ const (
 type PromoCodeType string
 
 const (
-	PromoCodeTypeDurationDays PromoCodeType = "duration_days"
-	PromoCodeTypePercentOff   PromoCodeType = "percent_off"
+	PromoCodeTypeDurationDays   PromoCodeType = "duration_days"
+	PromoCodeTypePercentOff     PromoCodeType = "percent_off"
+	PromoCodeTypeLifetimeAccess PromoCodeType = "lifetime_access"
+)
+
+type AccessDenialReason string
+
+const (
+	AccessDenialReasonNone               AccessDenialReason = ""
+	AccessDenialReasonInviteCodeRequired AccessDenialReason = "invite_code_required"
+	AccessDenialReasonExpired            AccessDenialReason = "expired"
+	AccessDenialReasonPending            AccessDenialReason = "pending"
+	AccessDenialReasonCanceled           AccessDenialReason = "canceled"
+	AccessDenialReasonUserBlocked        AccessDenialReason = "user_blocked"
+	AccessDenialReasonUserDeleted        AccessDenialReason = "user_deleted"
 )
 
 type AuditActorType string

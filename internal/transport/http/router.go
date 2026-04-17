@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -21,6 +22,8 @@ type HealthChecker interface {
 
 type ResolveTelegramUserIDFunc func(ctx context.Context, telegramUserID int64) (int64, error)
 type EnsureTelegramUserFunc func(ctx context.Context, telegramUserID int64, username string) (*EnsureTelegramUserResult, error)
+type GetAccessStatusFunc func(ctx context.Context, userID int64) (*AccessStatusResult, error)
+type ApplyInviteCodeFunc func(ctx context.Context, userID int64, code string) (*AccessStatusResult, error)
 type CreateDeviceFunc func(ctx context.Context, userID int64, name string) (*CreateDeviceResult, error)
 type ListUserDevicesFunc func(ctx context.Context, callerUserID int64) (*ListUserDevicesResult, error)
 type ResendDeviceConfigFunc func(ctx context.Context, userID, deviceID int64) (*ResendDeviceConfigResult, error)
@@ -30,6 +33,8 @@ type Dependencies struct {
 	HealthChecker         HealthChecker
 	ResolveTelegramUserID ResolveTelegramUserIDFunc
 	EnsureTelegramUser    EnsureTelegramUserFunc
+	GetAccessStatus       GetAccessStatusFunc
+	ApplyInviteCode       ApplyInviteCodeFunc
 	CreateDevice          CreateDeviceFunc
 	ListUserDevices       ListUserDevicesFunc
 	ResendDeviceConfig    ResendDeviceConfigFunc
@@ -66,6 +71,14 @@ type EnsureTelegramUserResult struct {
 	User User `json:"user"`
 }
 
+type AccessStatusResult struct {
+	AccessActive    bool       `json:"access_active"`
+	IsLifetime      bool       `json:"is_lifetime"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	CanCreateDevice bool       `json:"can_create_device"`
+	DenialReason    string     `json:"denial_reason,omitempty"`
+}
+
 type ListUserDevicesResult struct {
 	Devices []Device `json:"devices"`
 }
@@ -93,6 +106,10 @@ type createDeviceRequest struct {
 
 type ensureTelegramUserRequest struct {
 	Username string `json:"username"`
+}
+
+type applyInviteCodeRequest struct {
+	Code string `json:"code"`
 }
 
 func NewRouter(deps Dependencies) http.Handler {
@@ -137,11 +154,78 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Post("/{id}/revoke", revokeDeviceHandler(deps))
 	})
 
+	router.Route("/access", func(r chi.Router) {
+		r.Get("/", accessStatusHandler(deps))
+		r.Post("/apply-invite-code", applyInviteCodeHandler(deps))
+	})
+
 	router.Route("/telegram", func(r chi.Router) {
 		r.Post("/session", ensureTelegramUserHandler(deps))
 	})
 
 	return router
+}
+
+func accessStatusHandler(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps.GetAccessStatus == nil {
+			writeError(w, http.StatusServiceUnavailable, "access status is not configured")
+			return
+		}
+
+		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID, deps.EnsureTelegramUser)
+		if !ok {
+			return
+		}
+
+		result, err := deps.GetAccessStatus(r.Context(), userID)
+		if err != nil {
+			writeUseCaseError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func applyInviteCodeHandler(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if deps.ApplyInviteCode == nil {
+			writeError(w, http.StatusServiceUnavailable, "apply invite code is not configured")
+			return
+		}
+
+		userID, ok := userIDFromRequest(w, r, deps.ResolveTelegramUserID, deps.EnsureTelegramUser)
+		if !ok {
+			return
+		}
+
+		var request applyInviteCodeRequest
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json body")
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid json body")
+			return
+		}
+
+		request.Code = strings.TrimSpace(request.Code)
+		if request.Code == "" {
+			writeError(w, http.StatusBadRequest, "code is required")
+			return
+		}
+
+		result, err := deps.ApplyInviteCode(r.Context(), userID, request.Code)
+		if err != nil {
+			writeUseCaseError(w, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, result)
+	}
 }
 
 func ensureTelegramUserHandler(deps Dependencies) http.HandlerFunc {
@@ -387,7 +471,7 @@ func writeUseCaseError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, domain.ErrUserBlocked), errors.Is(err, domain.ErrUserDeleted), errors.Is(err, domain.ErrSubscriptionMiss):
 		writeError(w, http.StatusForbidden, "forbidden")
-	case errors.Is(err, domain.ErrDeviceExists), errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrDeviceRevoked), errors.Is(err, domain.ErrIPPoolExhausted):
+	case errors.Is(err, domain.ErrDeviceExists), errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrDeviceRevoked), errors.Is(err, domain.ErrIPPoolExhausted), errors.Is(err, domain.ErrPromoCodeInactive), errors.Is(err, domain.ErrPromoCodeUsed), errors.Is(err, domain.ErrPromoCodeLimit), errors.Is(err, domain.ErrPromoCodeAccess):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal error")

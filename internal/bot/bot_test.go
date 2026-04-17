@@ -86,7 +86,13 @@ func TestHandleMessageNewDeviceSuccess(t *testing.T) {
 
 func TestHandleMessageStartWhenBackendHealthy(t *testing.T) {
 	telegramClient := &stubTelegramClient{}
-	backendClient := &stubBackendClient{}
+	backendClient := &stubBackendClient{
+		accessStatusResult: &backendapi.AccessStatusResult{
+			AccessActive:    true,
+			CanCreateDevice: true,
+			IsLifetime:      true,
+		},
+	}
 
 	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
 
@@ -99,15 +105,15 @@ func TestHandleMessageStartWhenBackendHealthy(t *testing.T) {
 		t.Fatalf("handleMessage() error = %v", err)
 	}
 
-	if backendClient.healthCalls != 1 {
-		t.Fatalf("health calls = %d, want %d", backendClient.healthCalls, 1)
+	if backendClient.accessStatusCalls != 1 {
+		t.Fatalf("access status calls = %d, want %d", backendClient.accessStatusCalls, 1)
 	}
 
 	if len(telegramClient.sentMessages) != 1 {
 		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
 	}
 
-	want := "VPN bot is connected and backend API is reachable.\n\nUse /help to see available commands."
+	want := "Access is active.\n\nClosed beta access is lifetime.\nUse the buttons below to manage devices or create a new one."
 	if got := telegramClient.sentMessages[0].text; got != want {
 		t.Fatalf("message = %q, want %q", got, want)
 	}
@@ -115,7 +121,7 @@ func TestHandleMessageStartWhenBackendHealthy(t *testing.T) {
 
 func TestHandleMessageStartWhenBackendUnavailable(t *testing.T) {
 	telegramClient := &stubTelegramClient{}
-	backendClient := &stubBackendClient{healthErr: errors.New("timeout")}
+	backendClient := &stubBackendClient{accessStatusErr: errors.New("timeout")}
 
 	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
 
@@ -132,9 +138,159 @@ func TestHandleMessageStartWhenBackendUnavailable(t *testing.T) {
 		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
 	}
 
-	want := "VPN bot is connected, but backend API is temporarily unavailable.\n\nUse /help to see available commands."
+	want := "VPN bot is connected, but backend API is temporarily unavailable.\n\nPlease try again in a moment."
 	if got := telegramClient.sentMessages[0].text; got != want {
 		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestHandleMessageStartWhenAccessInactive(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		accessStatusResult: &backendapi.AccessStatusResult{
+			AccessActive:    false,
+			CanCreateDevice: false,
+			DenialReason:    "invite_code_required",
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/start",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	want := "Closed beta access is not active yet.\n\nEnter your invite code to unlock VPN access."
+	if got := telegramClient.sentMessages[0].text; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestHandleMessageStartInactiveAcceptsNextPlainTextInviteCode(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		accessStatusResult: &backendapi.AccessStatusResult{
+			AccessActive:    false,
+			CanCreateDevice: false,
+			DenialReason:    "invite_code_required",
+		},
+		applyInviteCodeResult: &backendapi.AccessStatusResult{
+			AccessActive:    true,
+			CanCreateDevice: true,
+			IsLifetime:      true,
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	if err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/start",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	}); err != nil {
+		t.Fatalf("handleMessage(/start) error = %v", err)
+	}
+
+	if err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "BETA-ANTON",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	}); err != nil {
+		t.Fatalf("handleMessage(invite code) error = %v", err)
+	}
+
+	if backendClient.applyInviteCodeCalls != 1 {
+		t.Fatalf("apply invite code calls = %d, want %d", backendClient.applyInviteCodeCalls, 1)
+	}
+
+	if backendClient.applyInviteCodeCode != "BETA-ANTON" {
+		t.Fatalf("invite code = %q, want %q", backendClient.applyInviteCodeCode, "BETA-ANTON")
+	}
+
+	if len(telegramClient.sentMessages) != 3 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 3)
+	}
+
+	if got := telegramClient.sentMessages[1].text; got != "Checking your invite code..." {
+		t.Fatalf("progress message = %q, want invite progress message", got)
+	}
+}
+
+func TestHandleMessagePromoSuccess(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		applyInviteCodeResult: &backendapi.AccessStatusResult{
+			AccessActive:    true,
+			CanCreateDevice: true,
+			IsLifetime:      true,
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/promo BETA-ANTON",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	if backendClient.applyInviteCodeCalls != 1 {
+		t.Fatalf("apply invite code calls = %d, want %d", backendClient.applyInviteCodeCalls, 1)
+	}
+
+	if backendClient.applyInviteCodeTelegramUserID != 777 {
+		t.Fatalf("telegram user id = %d, want %d", backendClient.applyInviteCodeTelegramUserID, 777)
+	}
+
+	if backendClient.applyInviteCodeCode != "BETA-ANTON" {
+		t.Fatalf("invite code = %q, want %q", backendClient.applyInviteCodeCode, "BETA-ANTON")
+	}
+
+	if len(telegramClient.sentMessages) != 2 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 2)
+	}
+
+	if got := telegramClient.sentMessages[0].text; got != "Checking your invite code..." {
+		t.Fatalf("progress message = %q", got)
+	}
+
+	want := "Invite code accepted.\n\nLifetime beta access is now active.\nYou can create your first device."
+	if got := telegramClient.sentMessages[1].text; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestHandleMessagePromoInvalidCode(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		applyInviteCodeErr: &backendapi.APIError{StatusCode: 404, Message: "not found"},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/promo UNKNOWN",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	if len(telegramClient.sentMessages) != 2 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 2)
+	}
+
+	if got := telegramClient.sentMessages[1].text; got != "That invite code is not valid." {
+		t.Fatalf("message = %q, want invalid code message", got)
 	}
 }
 
@@ -569,7 +725,7 @@ func TestHandleMessageNewDeviceMapsBackendErrors(t *testing.T) {
 		{
 			name:        "forbidden",
 			err:         &backendapi.APIError{StatusCode: 403, Message: "forbidden"},
-			wantMessage: "You are not allowed to create a device right now.",
+			wantMessage: "Access is not active yet.\n\nTap Enter invite code below or send /promo <invite_code>.",
 		},
 		{
 			name:        "conflict",
@@ -1029,6 +1185,22 @@ func TestHandleMessageRevokeMapsBackendErrors(t *testing.T) {
 	}
 }
 
+func TestSanitizeLoggedInputRedactsInviteCodeCommand(t *testing.T) {
+	got := sanitizeLoggedInput("/promo BETA-ANTON", "/promo", false)
+	want := "/promo <invite_code_redacted>"
+	if got != want {
+		t.Fatalf("sanitizeLoggedInput() = %q, want %q", got, want)
+	}
+}
+
+func TestSanitizeLoggedInputRedactsPendingInviteCodeEntry(t *testing.T) {
+	got := sanitizeLoggedInput("BETA-ANTON", "BETA-ANTON", true)
+	want := "<invite_code_redacted>"
+	if got != want {
+		t.Fatalf("sanitizeLoggedInput() = %q, want %q", got, want)
+	}
+}
+
 type stubTelegramClient struct {
 	sentMessages    []sentMessage
 	sentPhotos      []sentPhoto
@@ -1112,6 +1284,15 @@ func (s *stubTelegramClient) AnswerCallbackQuery(_ context.Context, callbackQuer
 type stubBackendClient struct {
 	healthCalls                      int
 	healthErr                        error
+	accessStatusCalls                int
+	accessStatusTelegramUserID       int64
+	accessStatusResult               *backendapi.AccessStatusResult
+	accessStatusErr                  error
+	applyInviteCodeCalls             int
+	applyInviteCodeTelegramUserID    int64
+	applyInviteCodeCode              string
+	applyInviteCodeResult            *backendapi.AccessStatusResult
+	applyInviteCodeErr               error
 	listDevicesCalls                 int
 	listDevicesTelegramUserID        int64
 	listDevicesResult                *backendapi.ListDevicesResult
@@ -1136,6 +1317,19 @@ type stubBackendClient struct {
 func (s *stubBackendClient) Health(context.Context) error {
 	s.healthCalls++
 	return s.healthErr
+}
+
+func (s *stubBackendClient) GetAccessStatus(_ context.Context, telegramUserID int64) (*backendapi.AccessStatusResult, error) {
+	s.accessStatusCalls++
+	s.accessStatusTelegramUserID = telegramUserID
+	return s.accessStatusResult, s.accessStatusErr
+}
+
+func (s *stubBackendClient) ApplyInviteCode(_ context.Context, telegramUserID int64, code string) (*backendapi.AccessStatusResult, error) {
+	s.applyInviteCodeCalls++
+	s.applyInviteCodeTelegramUserID = telegramUserID
+	s.applyInviteCodeCode = code
+	return s.applyInviteCodeResult, s.applyInviteCodeErr
 }
 
 func (s *stubBackendClient) ListDevices(_ context.Context, telegramUserID int64) (*backendapi.ListDevicesResult, error) {

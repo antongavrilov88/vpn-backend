@@ -15,4 +15,5 @@ var (
 	ErrPromoCodeInactive = errors.New("promo code is inactive")
 	ErrPromoCodeUsed     = errors.New("promo code already used")
 	ErrPromoCodeLimit    = errors.New("promo code usage limit reached")
+	ErrPromoCodeAccess   = errors.New("promo code does not grant access")
 )
