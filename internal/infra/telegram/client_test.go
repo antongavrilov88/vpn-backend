@@ -57,6 +57,39 @@ func TestClientSetCommands(t *testing.T) {
 	}
 }
 
+func TestClientSetCommandsWithScope(t *testing.T) {
+	client, err := NewClient("test-token", time.Second)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	client.baseURL = "https://api.telegram.org/bottest-token"
+	client.httpClient.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			t.Fatalf("parse query: %v", err)
+		}
+
+		if got := values.Get("scope"); got != `{"type":"all_private_chats"}` {
+			t.Fatalf("scope payload = %q", got)
+		}
+
+		return jsonResponse(`{"ok":true,"result":true}`), nil
+	})
+
+	err = client.SetCommandsWithScope(context.Background(), []BotCommand{
+		{Command: "promo", Description: "Enter invite code"},
+	}, &BotCommandScope{Type: BotCommandScopeAllPrivateChats})
+	if err != nil {
+		t.Fatalf("SetCommandsWithScope() error = %v", err)
+	}
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {

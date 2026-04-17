@@ -54,6 +54,7 @@ type telegramClient interface {
 	SendDocument(ctx context.Context, chatID int64, fileName string, document []byte, caption string) error
 	AnswerCallbackQuery(ctx context.Context, callbackQueryID, text string) error
 	SetCommands(ctx context.Context, commands []telegram.BotCommand) error
+	SetCommandsWithScope(ctx context.Context, commands []telegram.BotCommand, scope *telegram.BotCommandScope) error
 }
 
 type backendClient interface {
@@ -238,7 +239,14 @@ func (b *Bot) syncCommands(ctx context.Context) error {
 		return nil
 	}
 
-	return b.telegram.SetCommands(ctx, closedBetaBotCommands())
+	commands := closedBetaBotCommands()
+	if err := b.telegram.SetCommands(ctx, commands); err != nil {
+		return err
+	}
+
+	return b.telegram.SetCommandsWithScope(ctx, commands, &telegram.BotCommandScope{
+		Type: telegram.BotCommandScopeAllPrivateChats,
+	})
 }
 
 func closedBetaBotCommands() []telegram.BotCommand {

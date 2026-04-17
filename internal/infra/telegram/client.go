@@ -60,6 +60,15 @@ type BotCommand struct {
 	Description string `json:"description"`
 }
 
+type BotCommandScope struct {
+	Type string `json:"type"`
+}
+
+const (
+	BotCommandScopeDefault         = "default"
+	BotCommandScopeAllPrivateChats = "all_private_chats"
+)
+
 type ReplyKeyboardMarkup struct {
 	Keyboard              [][]KeyboardButton `json:"keyboard"`
 	ResizeKeyboard        bool               `json:"resize_keyboard,omitempty"`
@@ -242,14 +251,28 @@ func (c *Client) SendDocument(ctx context.Context, chatID int64, fileName string
 }
 
 func (c *Client) SetCommands(ctx context.Context, commands []BotCommand) error {
+	return c.SetCommandsWithScope(ctx, commands, nil)
+}
+
+func (c *Client) SetCommandsWithScope(ctx context.Context, commands []BotCommand, scope *BotCommandScope) error {
 	payload, err := json.Marshal(commands)
 	if err != nil {
 		return fmt.Errorf("encode setMyCommands request: %w", err)
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/setMyCommands", strings.NewReader(url.Values{
+	values := url.Values{
 		"commands": []string{string(payload)},
-	}.Encode()))
+	}
+
+	if scope != nil {
+		scopePayload, err := json.Marshal(scope)
+		if err != nil {
+			return fmt.Errorf("encode setMyCommands scope: %w", err)
+		}
+		values.Set("scope", string(scopePayload))
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/setMyCommands", strings.NewReader(values.Encode()))
 	if err != nil {
 		return fmt.Errorf("build setMyCommands request: %w", err)
 	}

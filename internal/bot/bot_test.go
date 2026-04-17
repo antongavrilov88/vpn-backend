@@ -1228,6 +1228,7 @@ type stubTelegramClient struct {
 	sendPhotoErr     error
 	setCommands      []telegram.BotCommand
 	setCommandsCalls int
+	setCommandScopes []*telegram.BotCommandScope
 }
 
 type sentMessage struct {
@@ -1306,6 +1307,19 @@ func (s *stubTelegramClient) AnswerCallbackQuery(_ context.Context, callbackQuer
 func (s *stubTelegramClient) SetCommands(_ context.Context, commands []telegram.BotCommand) error {
 	s.setCommandsCalls++
 	s.setCommands = append([]telegram.BotCommand(nil), commands...)
+	return nil
+}
+
+func (s *stubTelegramClient) SetCommandsWithScope(_ context.Context, commands []telegram.BotCommand, scope *telegram.BotCommandScope) error {
+	s.setCommandsCalls++
+	s.setCommands = append([]telegram.BotCommand(nil), commands...)
+	if scope == nil {
+		s.setCommandScopes = append(s.setCommandScopes, nil)
+		return nil
+	}
+
+	scopeCopy := *scope
+	s.setCommandScopes = append(s.setCommandScopes, &scopeCopy)
 	return nil
 }
 
@@ -1413,12 +1427,20 @@ func TestSyncCommandsUsesClosedBetaCommandSet(t *testing.T) {
 		t.Fatalf("syncCommands() error = %v", err)
 	}
 
-	if telegramClient.setCommandsCalls != 1 {
-		t.Fatalf("set commands calls = %d, want %d", telegramClient.setCommandsCalls, 1)
+	if telegramClient.setCommandsCalls != 2 {
+		t.Fatalf("set commands calls = %d, want %d", telegramClient.setCommandsCalls, 2)
 	}
 
 	if !reflect.DeepEqual(telegramClient.setCommands, closedBetaBotCommands()) {
 		t.Fatalf("set commands = %#v, want %#v", telegramClient.setCommands, closedBetaBotCommands())
+	}
+
+	if len(telegramClient.setCommandScopes) != 1 {
+		t.Fatalf("set command scopes = %#v, want one scoped sync", telegramClient.setCommandScopes)
+	}
+
+	if telegramClient.setCommandScopes[0] == nil || telegramClient.setCommandScopes[0].Type != telegram.BotCommandScopeAllPrivateChats {
+		t.Fatalf("scoped command sync = %#v, want all_private_chats", telegramClient.setCommandScopes[0])
 	}
 }
 
