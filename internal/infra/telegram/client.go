@@ -36,7 +36,9 @@ type Chat struct {
 }
 
 type User struct {
-	ID int64 `json:"id"`
+	ID           int64  `json:"id"`
+	Username     string `json:"username,omitempty"`
+	LanguageCode string `json:"language_code,omitempty"`
 }
 
 type CallbackQuery struct {

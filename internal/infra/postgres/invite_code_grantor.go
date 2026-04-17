@@ -14,6 +14,7 @@ import (
 )
 
 const closedBetaInvitePlanCode = "closed_beta_invite"
+const immediateInviteActivationSkew = 5 * time.Second
 
 type InviteCodeGrantor struct {
 	db *pgxpool.Pool
@@ -76,6 +77,12 @@ func (g *InviteCodeGrantor) ApplyInviteCode(ctx context.Context, userID int64, c
 
 func shouldSkipInviteCodeConsumption(activeSubscription *domain.Subscription) bool {
 	return activeSubscription != nil && activeSubscription.IsLifetime
+}
+
+func immediateInviteActivationStart(now time.Time) time.Time {
+	// Backdate slightly so a freshly granted invite is immediately visible to
+	// follow-up reads even if app and database clocks differ by a few seconds.
+	return now.Add(-immediateInviteActivationSkew)
 }
 
 func loadPromoCodeForUpdate(ctx context.Context, tx pgx.Tx, code string) (*domain.PromoCode, error) {
@@ -254,7 +261,7 @@ func grantSubscriptionForInviteCode(
 			UserID:     userID,
 			PlanCode:   closedBetaInvitePlanCode,
 			Status:     domain.SubscriptionStatusActive,
-			StartsAt:   now,
+			StartsAt:   immediateInviteActivationStart(now),
 			ExpiresAt:  &expiresAt,
 			IsLifetime: false,
 			Source:     domain.SubscriptionSourceTelegram,
@@ -277,7 +284,7 @@ func grantSubscriptionForInviteCode(
 			UserID:     userID,
 			PlanCode:   closedBetaInvitePlanCode,
 			Status:     domain.SubscriptionStatusActive,
-			StartsAt:   now,
+			StartsAt:   immediateInviteActivationStart(now),
 			ExpiresAt:  nil,
 			IsLifetime: true,
 			Source:     domain.SubscriptionSourceTelegram,

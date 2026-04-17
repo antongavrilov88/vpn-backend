@@ -25,9 +25,11 @@ type Bot struct {
 	stateMu           sync.Mutex
 	pendingName       map[int64]struct{}
 	pendingInviteCode map[int64]struct{}
+	chatLocales       map[int64]botLocale
 }
 
 type menuVariant int
+type botLocale string
 
 const (
 	maxDeviceNameLength = 128
@@ -36,14 +38,15 @@ const (
 	deviceActionConfig  = "config"
 	deviceActionShowQR  = "qr"
 	deviceActionRevoke  = "revoke"
-	menuDevicesLabel    = "My devices"
-	menuCreateLabel     = "Create device"
-	menuInviteCodeLabel = "Enter invite code"
-	menuHelpLabel       = "Help"
 
 	menuVariantActive menuVariant = iota
 	menuVariantInviteOnly
 	menuVariantHelpOnly
+)
+
+const (
+	localeEN botLocale = "en"
+	localeRU botLocale = "ru"
 )
 
 type telegramClient interface {
@@ -75,6 +78,7 @@ func New(logger *slog.Logger, telegramClient telegramClient, backendClient backe
 		pollTimeout:       pollTimeout,
 		pendingName:       make(map[int64]struct{}),
 		pendingInviteCode: make(map[int64]struct{}),
+		chatLocales:       make(map[int64]botLocale),
 	}
 }
 
@@ -135,6 +139,8 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) erro
 		telegramUserID = message.From.ID
 	}
 
+	b.rememberChatLocale(message.Chat.ID, localeFromTelegramUser(message.From))
+
 	b.logger.Info(
 		"handle telegram command",
 		"command", sanitizeLoggedInput(trimmedText, fields[0], b.hasPendingInviteCode(message.Chat.ID)),
@@ -154,6 +160,8 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) erro
 			return b.handlePromo(ctx, message, "")
 		case "/help":
 			return b.handleHelp(ctx, message)
+		case "/language":
+			return b.handleLanguage(ctx, message, "")
 		}
 	}
 
@@ -183,6 +191,10 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) erro
 		b.clearPendingDeviceName(message.Chat.ID)
 		b.clearPendingInviteCode(message.Chat.ID)
 		return b.handleHelp(ctx, message)
+	case "/language":
+		b.clearPendingDeviceName(message.Chat.ID)
+		b.clearPendingInviteCode(message.Chat.ID)
+		return b.handleLanguage(ctx, message, strings.TrimSpace(strings.TrimPrefix(message.Text, fields[0])))
 	case "/devices":
 		return b.handleDevices(ctx, message)
 	case "/newdevice":
@@ -236,8 +248,27 @@ func (b *Bot) handleHelp(ctx context.Context, message *telegram.Message) error {
 	return b.sendAccessAwareMessage(ctx, message.Chat.ID, helpMessage(), result)
 }
 
+func (b *Bot) handleLanguage(ctx context.Context, message *telegram.Message, rawValue string) error {
+	locale := b.localeForChat(message.Chat.ID)
+	value := strings.ToLower(strings.TrimSpace(rawValue))
+	if value == "" {
+		return b.sendPlainMessageForChat(ctx, message.Chat.ID, languageUsageMessage(locale))
+	}
+
+	switch value {
+	case "en", "english":
+		b.setChatLocale(message.Chat.ID, localeEN)
+		return b.sendPlainMessageForChat(ctx, message.Chat.ID, languageChangedMessage(localeEN))
+	case "ru", "rus", "russian", "рус", "русский":
+		b.setChatLocale(message.Chat.ID, localeRU)
+		return b.sendPlainMessageForChat(ctx, message.Chat.ID, languageChangedMessage(localeRU))
+	default:
+		return b.sendPlainMessageForChat(ctx, message.Chat.ID, languageUsageMessage(locale))
+	}
+}
+
 func helpMessage() string {
-	return "Available commands:\n/start - show onboarding and access status\n/help - show this help\n/devices - show your devices and available actions\n/newdevice - create a new device\n/promo <code> - activate invite-only beta access\n\nYou can also use the buttons below."
+	return "Available commands:\n/start - show onboarding and access status\n/help - show this help\n/devices - show your devices and available actions\n/newdevice - create a new device\n/promo <code> - activate invite-only beta access\n/language <en|ru> - switch bot language\n\nUse the command menu for help and language, and the bottom buttons for the main device actions."
 }
 
 func (b *Bot) checkBackend(ctx context.Context) error {
@@ -270,15 +301,27 @@ func closedBetaBotCommands() []telegram.BotCommand {
 	return []telegram.BotCommand{
 		{
 			Command:     "start",
-			Description: "Check access and begin",
+			Description: "Check access / Проверить доступ",
+		},
+		{
+			Command:     "devices",
+			Description: "My devices / Мои устройства",
+		},
+		{
+			Command:     "newdevice",
+			Description: "Create device / Создать устройство",
 		},
 		{
 			Command:     "help",
-			Description: "Show help",
+			Description: "Help / Помощь",
+		},
+		{
+			Command:     "language",
+			Description: "Language / Язык",
 		},
 		{
 			Command:     "promo",
-			Description: "Enter invite code",
+			Description: "Enter promo code / Ввести промокод",
 		},
 	}
 }
@@ -853,6 +896,43 @@ func callbackContext(callback *telegram.CallbackQuery) (chatID, telegramUserID i
 	return callback.Message.Chat.ID, callback.From.ID, true
 }
 
+func localeFromTelegramUser(user *telegram.User) botLocale {
+	if user != nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(user.LanguageCode)), "ru") {
+		return localeRU
+	}
+
+	return localeEN
+}
+
+func (b *Bot) rememberChatLocale(chatID int64, locale botLocale) {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+
+	if _, ok := b.chatLocales[chatID]; ok {
+		return
+	}
+
+	b.chatLocales[chatID] = locale
+}
+
+func (b *Bot) setChatLocale(chatID int64, locale botLocale) {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+
+	b.chatLocales[chatID] = locale
+}
+
+func (b *Bot) localeForChat(chatID int64) botLocale {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+
+	if locale, ok := b.chatLocales[chatID]; ok {
+		return locale
+	}
+
+	return localeEN
+}
+
 func (b *Bot) getAccessStatus(ctx context.Context, telegramUserID int64) (*backendapi.AccessStatusResult, error) {
 	result, err := b.backend.GetAccessStatus(ctx, telegramUserID)
 	if err != nil {
@@ -910,23 +990,27 @@ func (b *Bot) answerCallback(ctx context.Context, callbackQueryID, text string) 
 }
 
 func (b *Bot) sendMenuMessage(ctx context.Context, chatID int64, text string) error {
-	return b.sendMenuMessageWithKeyboard(ctx, chatID, text, menuKeyboard(menuVariantActive))
+	return b.sendMenuMessageWithKeyboard(ctx, chatID, text, menuKeyboard(b.localeForChat(chatID), menuVariantActive))
 }
 
 func (b *Bot) sendInvitePromptMessage(ctx context.Context, chatID int64, text string) error {
-	return b.sendMenuMessageWithKeyboard(ctx, chatID, text, menuKeyboard(menuVariantInviteOnly))
+	return b.sendMenuMessageWithKeyboard(ctx, chatID, text, menuKeyboard(b.localeForChat(chatID), menuVariantInviteOnly))
 }
 
 func (b *Bot) sendAccessAwareMessage(ctx context.Context, chatID int64, text string, result *backendapi.AccessStatusResult) error {
-	return b.sendMenuMessageWithKeyboard(ctx, chatID, text, keyboardForAccessStatus(result))
+	return b.sendMenuMessageWithKeyboard(ctx, chatID, text, keyboardForAccessStatus(b.localeForChat(chatID), result))
 }
 
 func (b *Bot) sendBackendUnavailableMessage(ctx context.Context, chatID int64) error {
-	return b.sendMenuMessageWithKeyboard(ctx, chatID, "VPN bot is connected, but backend API is temporarily unavailable.\n\nPlease try again in a moment.", menuKeyboard(menuVariantHelpOnly))
+	return b.sendMenuMessageWithKeyboard(ctx, chatID, "VPN bot is connected, but backend API is temporarily unavailable.\n\nPlease try again in a moment.", menuKeyboard(b.localeForChat(chatID), menuVariantHelpOnly))
 }
 
 func (b *Bot) sendMenuMessageWithKeyboard(ctx context.Context, chatID int64, text string, keyboard telegram.ReplyKeyboardMarkup) error {
 	return b.telegram.SendMessageWithReplyKeyboard(ctx, chatID, text, keyboard)
+}
+
+func (b *Bot) sendPlainMessageForChat(ctx context.Context, chatID int64, text string) error {
+	return b.telegram.SendMessage(ctx, chatID, text)
 }
 
 func (b *Bot) sendConfigMessage(ctx context.Context, chatID int64, text string) error {
@@ -1019,14 +1103,16 @@ func parseDeviceID(rawValue, usage string) (int64, string) {
 
 func normalizeMenuCommand(text string) (string, bool) {
 	switch strings.TrimSpace(text) {
-	case menuDevicesLabel:
+	case menuDevicesLabel(localeEN), menuDevicesLabel(localeRU):
 		return "/devices", true
-	case menuCreateLabel:
+	case menuCreateLabel(localeEN), menuCreateLabel(localeRU):
 		return "/newdevice", true
-	case menuInviteCodeLabel:
+	case menuInviteCodeLabel(localeEN), menuInviteCodeLabel(localeRU):
 		return "/promo", true
-	case menuHelpLabel:
+	case menuHelpLabel(localeEN), menuHelpLabel(localeRU):
 		return "/help", true
+	case menuLanguageLabel(localeEN), menuLanguageLabel(localeRU):
+		return "/language", true
 	default:
 		return "", false
 	}
@@ -1048,36 +1134,31 @@ func sanitizeLoggedInput(rawText, firstField string, pendingInviteCode bool) str
 	return rawText
 }
 
-func menuKeyboard(variant menuVariant) telegram.ReplyKeyboardMarkup {
+func menuKeyboard(locale botLocale, variant menuVariant) telegram.ReplyKeyboardMarkup {
 	keyboard := telegram.ReplyKeyboardMarkup{
 		ResizeKeyboard:        true,
 		IsPersistent:          true,
-		InputFieldPlaceholder: "Choose an action",
+		InputFieldPlaceholder: inputPlaceholder(locale),
 	}
 
 	switch variant {
 	case menuVariantInviteOnly:
 		keyboard.Keyboard = [][]telegram.KeyboardButton{
 			{
-				{Text: menuInviteCodeLabel},
-				{Text: menuHelpLabel},
+				{Text: menuInviteCodeLabel(locale)},
 			},
 		}
 	case menuVariantHelpOnly:
 		keyboard.Keyboard = [][]telegram.KeyboardButton{
 			{
-				{Text: menuHelpLabel},
+				{Text: menuHelpLabel(locale)},
 			},
 		}
 	default:
 		keyboard.Keyboard = [][]telegram.KeyboardButton{
 			{
-				{Text: menuDevicesLabel},
-				{Text: menuCreateLabel},
-			},
-			{
-				{Text: menuInviteCodeLabel},
-				{Text: menuHelpLabel},
+				{Text: menuDevicesLabel(locale)},
+				{Text: menuCreateLabel(locale)},
 			},
 		}
 	}
@@ -1085,16 +1166,88 @@ func menuKeyboard(variant menuVariant) telegram.ReplyKeyboardMarkup {
 	return keyboard
 }
 
-func keyboardForAccessStatus(result *backendapi.AccessStatusResult) telegram.ReplyKeyboardMarkup {
+func keyboardForAccessStatus(locale botLocale, result *backendapi.AccessStatusResult) telegram.ReplyKeyboardMarkup {
 	if result == nil || result.AccessActive {
-		return menuKeyboard(menuVariantActive)
+		return menuKeyboard(locale, menuVariantActive)
 	}
 
 	switch result.DenialReason {
 	case "user_blocked", "user_deleted":
-		return menuKeyboard(menuVariantHelpOnly)
+		return menuKeyboard(locale, menuVariantHelpOnly)
 	default:
-		return menuKeyboard(menuVariantInviteOnly)
+		return menuKeyboard(locale, menuVariantInviteOnly)
+	}
+}
+
+func inputPlaceholder(locale botLocale) string {
+	switch locale {
+	case localeRU:
+		return "Выберите действие"
+	default:
+		return "Choose an action"
+	}
+}
+
+func menuDevicesLabel(locale botLocale) string {
+	switch locale {
+	case localeRU:
+		return "Мои устройства"
+	default:
+		return "My devices"
+	}
+}
+
+func menuCreateLabel(locale botLocale) string {
+	switch locale {
+	case localeRU:
+		return "Создать устройство"
+	default:
+		return "Create device"
+	}
+}
+
+func menuInviteCodeLabel(locale botLocale) string {
+	switch locale {
+	case localeRU:
+		return "Ввести промокод"
+	default:
+		return "Enter promo code"
+	}
+}
+
+func menuHelpLabel(locale botLocale) string {
+	switch locale {
+	case localeRU:
+		return "Помощь"
+	default:
+		return "Help"
+	}
+}
+
+func menuLanguageLabel(locale botLocale) string {
+	switch locale {
+	case localeRU:
+		return "Сменить язык"
+	default:
+		return "Change language"
+	}
+}
+
+func languageUsageMessage(locale botLocale) string {
+	switch locale {
+	case localeRU:
+		return "Используйте /language ru или /language en."
+	default:
+		return "Use /language ru or /language en."
+	}
+}
+
+func languageChangedMessage(locale botLocale) string {
+	switch locale {
+	case localeRU:
+		return "Язык бота переключен на русский."
+	default:
+		return "Bot language changed to English."
 	}
 }
 
