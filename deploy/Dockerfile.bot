@@ -26,4 +26,6 @@ COPY --from=builder /out/bot /app/bot
 
 USER appuser
 
+LABEL org.opencontainers.image.source=https://github.com/antongavrilov88/vpn-backend
+
 ENTRYPOINT ["/app/bot"]

@@ -21,4 +21,6 @@ WORKDIR /app
 COPY --from=builder /go/bin/goose /usr/local/bin/goose
 COPY --from=builder /app/migrations /app/migrations
 
+LABEL org.opencontainers.image.source=https://github.com/antongavrilov88/vpn-backend
+
 ENTRYPOINT ["goose"]
