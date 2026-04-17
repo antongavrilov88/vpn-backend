@@ -153,7 +153,7 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) erro
 		case "/promo":
 			return b.handlePromo(ctx, message, "")
 		case "/help":
-			return b.sendMenuMessage(ctx, message.Chat.ID, helpMessage())
+			return b.handleHelp(ctx, message)
 		}
 	}
 
@@ -182,7 +182,7 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) erro
 	case "/help":
 		b.clearPendingDeviceName(message.Chat.ID)
 		b.clearPendingInviteCode(message.Chat.ID)
-		return b.sendMenuMessage(ctx, message.Chat.ID, helpMessage())
+		return b.handleHelp(ctx, message)
 	case "/devices":
 		return b.handleDevices(ctx, message)
 	case "/newdevice":
@@ -203,10 +203,9 @@ func (b *Bot) handleStart(ctx context.Context, message *telegram.Message) error 
 		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
 	}
 
-	result, err := b.backend.GetAccessStatus(ctx, message.From.ID)
+	result, err := b.getAccessStatus(ctx, message.From.ID)
 	if err != nil {
 		b.clearPendingInviteCode(message.Chat.ID)
-		b.logger.Error("get access status via backend", "telegram_user_id", message.From.ID, "error", err)
 		return b.sendMenuMessage(ctx, message.Chat.ID, "VPN bot is connected, but backend API is temporarily unavailable.\n\nPlease try again in a moment.")
 	}
 
@@ -217,6 +216,24 @@ func (b *Bot) handleStart(ctx context.Context, message *telegram.Message) error 
 	}
 
 	return b.sendAccessAwareMessage(ctx, message.Chat.ID, formatStartAccessMessage(result), result)
+}
+
+func (b *Bot) handleHelp(ctx context.Context, message *telegram.Message) error {
+	if message.From == nil {
+		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
+	}
+
+	result, err := b.getAccessStatus(ctx, message.From.ID)
+	if err != nil {
+		return b.sendMenuMessage(ctx, message.Chat.ID, "VPN bot is connected, but backend API is temporarily unavailable.\n\nPlease try again in a moment.")
+	}
+
+	if !result.AccessActive {
+		return b.handleInactiveAccess(ctx, message.Chat.ID, result)
+	}
+
+	b.clearPendingInviteCode(message.Chat.ID)
+	return b.sendAccessAwareMessage(ctx, message.Chat.ID, helpMessage(), result)
 }
 
 func helpMessage() string {
@@ -306,6 +323,11 @@ func (b *Bot) handleDevices(ctx context.Context, message *telegram.Message) erro
 		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
 	}
 
+	allowed, err := b.ensureActiveAccess(ctx, message.Chat.ID, message.From.ID)
+	if err != nil || !allowed {
+		return err
+	}
+
 	result, err := b.backend.ListDevices(ctx, message.From.ID)
 	if err != nil {
 		if shouldPromptInviteCodeEntryFromError(err) {
@@ -322,6 +344,11 @@ func (b *Bot) handleDevices(ctx context.Context, message *telegram.Message) erro
 func (b *Bot) handleNewDevice(ctx context.Context, message *telegram.Message, rawName string) error {
 	if message.From == nil {
 		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
+	}
+
+	allowed, err := b.ensureActiveAccess(ctx, message.Chat.ID, message.From.ID)
+	if err != nil || !allowed {
+		return err
 	}
 
 	b.clearPendingInviteCode(message.Chat.ID)
@@ -399,6 +426,11 @@ func (b *Bot) handleConfig(ctx context.Context, message *telegram.Message, rawDe
 		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
 	}
 
+	allowed, err := b.ensureActiveAccess(ctx, message.Chat.ID, message.From.ID)
+	if err != nil || !allowed {
+		return err
+	}
+
 	deviceID, validationMessage := parseDeviceID(rawDeviceID, "/config <device_id>")
 	if validationMessage != "" {
 		return b.sendMenuMessage(ctx, message.Chat.ID, validationMessage)
@@ -425,6 +457,11 @@ func (b *Bot) handleRevoke(ctx context.Context, message *telegram.Message, rawDe
 		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
 	}
 
+	allowed, err := b.ensureActiveAccess(ctx, message.Chat.ID, message.From.ID)
+	if err != nil || !allowed {
+		return err
+	}
+
 	deviceID, validationMessage := parseDeviceID(rawDeviceID, "/revoke <device_id>")
 	if validationMessage != "" {
 		return b.sendMenuMessage(ctx, message.Chat.ID, validationMessage)
@@ -446,6 +483,15 @@ func (b *Bot) handleConfigCallback(ctx context.Context, callback *telegram.Callb
 		return nil
 	}
 
+	allowed, accessStatus, err := b.ensureActiveAccessWithStatus(ctx, chatID, telegramUserID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		b.answerCallback(ctx, callback.ID, inactiveAccessCallbackMessage(accessStatus))
+		return nil
+	}
+
 	b.answerCallback(ctx, callback.ID, configProgressMessage())
 
 	result, err := b.backend.ResendDeviceConfig(ctx, telegramUserID, deviceID)
@@ -462,6 +508,15 @@ func (b *Bot) handleQRCodeCallback(ctx context.Context, callback *telegram.Callb
 	chatID, telegramUserID, ok := callbackContext(callback)
 	if !ok {
 		b.answerCallback(ctx, callback.ID, "This action is no longer available.")
+		return nil
+	}
+
+	allowed, accessStatus, err := b.ensureActiveAccessWithStatus(ctx, chatID, telegramUserID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		b.answerCallback(ctx, callback.ID, inactiveAccessCallbackMessage(accessStatus))
 		return nil
 	}
 
@@ -488,6 +543,15 @@ func (b *Bot) handleRevokeCallback(ctx context.Context, callback *telegram.Callb
 	chatID, telegramUserID, ok := callbackContext(callback)
 	if !ok {
 		b.answerCallback(ctx, callback.ID, "This action is no longer available.")
+		return nil
+	}
+
+	allowed, accessStatus, err := b.ensureActiveAccessWithStatus(ctx, chatID, telegramUserID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		b.answerCallback(ctx, callback.ID, inactiveAccessCallbackMessage(accessStatus))
 		return nil
 	}
 
@@ -789,6 +853,52 @@ func callbackContext(callback *telegram.CallbackQuery) (chatID, telegramUserID i
 	return callback.Message.Chat.ID, callback.From.ID, true
 }
 
+func (b *Bot) getAccessStatus(ctx context.Context, telegramUserID int64) (*backendapi.AccessStatusResult, error) {
+	result, err := b.backend.GetAccessStatus(ctx, telegramUserID)
+	if err != nil {
+		b.logger.Error("get access status via backend", "telegram_user_id", telegramUserID, "error", err)
+		return nil, err
+	}
+
+	if result == nil {
+		b.logger.Error("get access status via backend", "telegram_user_id", telegramUserID, "error", "empty access status response")
+		return nil, fmt.Errorf("empty access status response")
+	}
+
+	return result, nil
+}
+
+func (b *Bot) ensureActiveAccess(ctx context.Context, chatID, telegramUserID int64) (bool, error) {
+	allowed, _, err := b.ensureActiveAccessWithStatus(ctx, chatID, telegramUserID)
+	return allowed, err
+}
+
+func (b *Bot) ensureActiveAccessWithStatus(ctx context.Context, chatID, telegramUserID int64) (bool, *backendapi.AccessStatusResult, error) {
+	result, err := b.getAccessStatus(ctx, telegramUserID)
+	if err != nil {
+		return false, nil, b.sendMenuMessage(ctx, chatID, "VPN bot is connected, but backend API is temporarily unavailable.\n\nPlease try again in a moment.")
+	}
+
+	if result.AccessActive {
+		b.clearPendingInviteCode(chatID)
+		return true, result, nil
+	}
+
+	return false, result, b.handleInactiveAccess(ctx, chatID, result)
+}
+
+func (b *Bot) handleInactiveAccess(ctx context.Context, chatID int64, result *backendapi.AccessStatusResult) error {
+	b.clearPendingDeviceName(chatID)
+
+	if shouldPromptInviteCodeEntry(result) {
+		b.markPendingInviteCode(chatID)
+	} else {
+		b.clearPendingInviteCode(chatID)
+	}
+
+	return b.sendAccessAwareMessage(ctx, chatID, formatInactiveAccessMessage(result), result)
+}
+
 func (b *Bot) answerCallback(ctx context.Context, callbackQueryID, text string) {
 	if callbackQueryID == "" {
 		return
@@ -1035,6 +1145,21 @@ func formatInactiveAccessPrompt() string {
 	return "Access is not active yet.\n\nTap Enter invite code below or send /promo <invite_code>."
 }
 
+func inactiveAccessCallbackMessage(result *backendapi.AccessStatusResult) string {
+	if result == nil {
+		return "Access is not active yet."
+	}
+
+	switch result.DenialReason {
+	case "user_blocked":
+		return "Access is blocked."
+	case "user_deleted":
+		return "Account is inactive."
+	default:
+		return "Enter an invite code first."
+	}
+}
+
 func shouldPromptInviteCodeEntry(result *backendapi.AccessStatusResult) bool {
 	if result == nil || result.AccessActive {
 		return false
@@ -1129,7 +1254,7 @@ func (b *Bot) hasPendingInviteCode(chatID int64) bool {
 func (b *Bot) handlePendingInviteCode(ctx context.Context, message *telegram.Message, rawCode string) error {
 	code, validationMessage := validateInviteCode(rawCode)
 	if validationMessage != "" {
-		return b.sendMenuMessage(ctx, message.Chat.ID, validationMessage)
+		return b.sendInvitePromptMessage(ctx, message.Chat.ID, validationMessage)
 	}
 
 	return b.handlePromo(ctx, message, code)
