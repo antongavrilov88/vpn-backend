@@ -31,6 +31,19 @@ type Device struct {
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 }
 
+type User struct {
+	ID         int64     `json:"id"`
+	TelegramID *int64    `json:"telegram_id,omitempty"`
+	Username   string    `json:"username"`
+	Status     string    `json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type EnsureTelegramSessionResult struct {
+	User User `json:"user"`
+}
+
 type ListDevicesResult struct {
 	Devices []Device `json:"devices"`
 }
@@ -106,6 +119,10 @@ func (c *Client) Health(ctx context.Context) error {
 }
 
 func (c *Client) ListDevices(ctx context.Context, telegramUserID int64) (*ListDevicesResult, error) {
+	if _, err := c.EnsureTelegramSession(ctx, telegramUserID, ""); err != nil {
+		return nil, err
+	}
+
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/devices", nil)
 	if err != nil {
 		return nil, fmt.Errorf("build list devices request: %w", err)
@@ -131,6 +148,10 @@ func (c *Client) ListDevices(ctx context.Context, telegramUserID int64) (*ListDe
 }
 
 func (c *Client) CreateDevice(ctx context.Context, telegramUserID int64, name string) (*CreateDeviceResult, error) {
+	if _, err := c.EnsureTelegramSession(ctx, telegramUserID, ""); err != nil {
+		return nil, err
+	}
+
 	requestBody, err := json.Marshal(struct {
 		Name string `json:"name"`
 	}{
@@ -166,6 +187,10 @@ func (c *Client) CreateDevice(ctx context.Context, telegramUserID int64, name st
 }
 
 func (c *Client) ResendDeviceConfig(ctx context.Context, telegramUserID, deviceID int64) (*ResendDeviceConfigResult, error) {
+	if _, err := c.EnsureTelegramSession(ctx, telegramUserID, ""); err != nil {
+		return nil, err
+	}
+
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/devices/"+strconv.FormatInt(deviceID, 10)+"/config", nil)
 	if err != nil {
 		return nil, fmt.Errorf("build resend device config request: %w", err)
@@ -195,6 +220,10 @@ func (c *Client) ResendDeviceConfig(ctx context.Context, telegramUserID, deviceI
 }
 
 func (c *Client) RevokeDevice(ctx context.Context, telegramUserID, deviceID int64) (*RevokeDeviceResult, error) {
+	if _, err := c.EnsureTelegramSession(ctx, telegramUserID, ""); err != nil {
+		return nil, err
+	}
+
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/devices/"+strconv.FormatInt(deviceID, 10)+"/revoke", nil)
 	if err != nil {
 		return nil, fmt.Errorf("build revoke device request: %w", err)
@@ -214,6 +243,41 @@ func (c *Client) RevokeDevice(ctx context.Context, telegramUserID, deviceID int6
 	var result RevokeDeviceResult
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode backend revoke device response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (c *Client) EnsureTelegramSession(ctx context.Context, telegramUserID int64, username string) (*EnsureTelegramSessionResult, error) {
+	requestBody, err := json.Marshal(struct {
+		Username string `json:"username,omitempty"`
+	}{
+		Username: username,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode ensure telegram session request: %w", err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/telegram/session", bytes.NewReader(requestBody))
+	if err != nil {
+		return nil, fmt.Errorf("build ensure telegram session request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Telegram-ID", strconv.FormatInt(telegramUserID, 10))
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("call backend ensure telegram session: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return nil, decodeAPIError(response.Body, response.StatusCode)
+	}
+
+	var result EnsureTelegramSessionResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode ensure telegram session response: %w", err)
 	}
 
 	return &result, nil
