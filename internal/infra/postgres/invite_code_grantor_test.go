@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"testing"
+	"time"
 
 	"vpn-backend/internal/domain"
 )
@@ -39,5 +40,16 @@ func TestShouldSkipInviteCodeConsumption(t *testing.T) {
 				t.Fatalf("shouldSkipInviteCodeConsumption() = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestImmediateInviteActivationStartBackdatesTimestamp(t *testing.T) {
+	now := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+
+	got := immediateInviteActivationStart(now)
+	want := now.Add(-immediateInviteActivationSkew)
+
+	if !got.Equal(want) {
+		t.Fatalf("immediateInviteActivationStart() = %v, want %v", got, want)
 	}
 }

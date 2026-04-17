@@ -120,8 +120,7 @@ func TestHandleMessageStartWhenBackendHealthy(t *testing.T) {
 	}
 
 	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
-		{menuDevicesLabel, menuCreateLabel},
-		{menuInviteCodeLabel, menuHelpLabel},
+		{menuDevicesLabel(localeEN), menuCreateLabel(localeEN)},
 	})
 }
 
@@ -150,7 +149,7 @@ func TestHandleMessageStartWhenBackendUnavailable(t *testing.T) {
 	}
 
 	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
-		{menuHelpLabel},
+		{menuHelpLabel(localeEN)},
 	})
 }
 
@@ -181,7 +180,33 @@ func TestHandleMessageStartWhenAccessInactive(t *testing.T) {
 	}
 
 	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
-		{menuInviteCodeLabel, menuHelpLabel},
+		{menuInviteCodeLabel(localeEN)},
+	})
+}
+
+func TestHandleMessageStartUsesRussianKeyboardForRussianTelegramUser(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		accessStatusResult: &backendapi.AccessStatusResult{
+			AccessActive:    false,
+			CanCreateDevice: false,
+			DenialReason:    "invite_code_required",
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/start",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777, LanguageCode: "ru"},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
+		{menuInviteCodeLabel(localeRU)},
 	})
 }
 
@@ -277,7 +302,7 @@ func TestHandleMessageStartInactiveInvalidInviteCodeKeepsInviteKeyboard(t *testi
 	}
 
 	assertReplyKeyboardTexts(t, telegramClient.sentMessages[1].replyKB, [][]string{
-		{menuInviteCodeLabel, menuHelpLabel},
+		{menuInviteCodeLabel(localeEN)},
 	})
 }
 
@@ -316,7 +341,60 @@ func TestHandleMessageHelpWhenAccessInactiveShowsInvitePrompt(t *testing.T) {
 	}
 
 	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
-		{menuInviteCodeLabel, menuHelpLabel},
+		{menuInviteCodeLabel(localeEN)},
+	})
+}
+
+func TestHandleMessageLanguageSwitchesKeyboardLocale(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{
+		accessStatusResult: &backendapi.AccessStatusResult{
+			AccessActive:    true,
+			CanCreateDevice: true,
+			IsLifetime:      true,
+		},
+	}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	if err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/language ru",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	}); err != nil {
+		t.Fatalf("handleMessage(/language ru) error = %v", err)
+	}
+
+	if err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/start",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	}); err != nil {
+		t.Fatalf("handleMessage(/start) error = %v", err)
+	}
+
+	assertReplyKeyboardTexts(t, telegramClient.sentMessages[1].replyKB, [][]string{
+		{menuDevicesLabel(localeRU), menuCreateLabel(localeRU)},
+	})
+
+	if err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/language en",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	}); err != nil {
+		t.Fatalf("handleMessage(/language en) error = %v", err)
+	}
+
+	if err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/start",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	}); err != nil {
+		t.Fatalf("handleMessage(/start after en) error = %v", err)
+	}
+
+	assertReplyKeyboardTexts(t, telegramClient.sentMessages[3].replyKB, [][]string{
+		{menuDevicesLabel(localeEN), menuCreateLabel(localeEN)},
 	})
 }
 
@@ -393,7 +471,7 @@ func TestHandleMessagePromoInvalidCode(t *testing.T) {
 	}
 
 	assertReplyKeyboardTexts(t, telegramClient.sentMessages[1].replyKB, [][]string{
-		{menuInviteCodeLabel, menuHelpLabel},
+		{menuInviteCodeLabel(localeEN)},
 	})
 }
 
@@ -604,7 +682,7 @@ func TestHandleMessageDevicesWhenAccessInactiveDoesNotListDevices(t *testing.T) 
 	}
 
 	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
-		{menuInviteCodeLabel, menuHelpLabel},
+		{menuInviteCodeLabel(localeEN)},
 	})
 }
 
@@ -637,7 +715,7 @@ func TestHandleMessageDevicesWhenAccessStatusUnavailableShowsHelpOnlyKeyboard(t 
 	}
 
 	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
-		{menuHelpLabel},
+		{menuHelpLabel(localeEN)},
 	})
 }
 
@@ -859,7 +937,7 @@ func TestHandleCallbackQueryConfigWhenAccessInactiveShowsInvitePrompt(t *testing
 	}
 
 	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
-		{menuInviteCodeLabel, menuHelpLabel},
+		{menuInviteCodeLabel(localeEN)},
 	})
 }
 
@@ -927,7 +1005,7 @@ func TestHandleMessageNewDeviceWhenAccessInactiveDoesNotPromptForName(t *testing
 	}
 
 	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
-		{menuInviteCodeLabel, menuHelpLabel},
+		{menuInviteCodeLabel(localeEN)},
 	})
 }
 
@@ -1033,7 +1111,7 @@ func TestHandleMessageNewDeviceMapsBackendErrors(t *testing.T) {
 
 			if test.name == "forbidden" {
 				assertReplyKeyboardTexts(t, telegramClient.sentMessages[1].replyKB, [][]string{
-					{menuInviteCodeLabel, menuHelpLabel},
+					{menuInviteCodeLabel(localeEN)},
 				})
 			}
 		})
@@ -1665,9 +1743,12 @@ func timePtr(value time.Time) *time.Time {
 func TestClosedBetaBotCommands(t *testing.T) {
 	got := closedBetaBotCommands()
 	want := []telegram.BotCommand{
-		{Command: "start", Description: "Check access and begin"},
-		{Command: "help", Description: "Show help"},
-		{Command: "promo", Description: "Enter invite code"},
+		{Command: "start", Description: "Check access / Проверить доступ"},
+		{Command: "devices", Description: "My devices / Мои устройства"},
+		{Command: "newdevice", Description: "Create device / Создать устройство"},
+		{Command: "help", Description: "Help / Помощь"},
+		{Command: "language", Description: "Language / Язык"},
+		{Command: "promo", Description: "Enter promo code / Ввести промокод"},
 	}
 
 	if !reflect.DeepEqual(got, want) {
