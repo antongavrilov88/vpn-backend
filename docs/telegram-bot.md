@@ -69,6 +69,7 @@ Closed-beta onboarding is invite-code based:
 - if access is inactive, the bot explains the state and offers invite-code entry
 - users can tap `Enter invite code` or send `/promo <code>`
 - after successful activation, normal device flows unlock through backend access checks
+- the Telegram command menu is kept minimal in closed beta: `/start`, `/help`, `/promo`
 
 For normal device management, `/devices` is the primary flow:
 

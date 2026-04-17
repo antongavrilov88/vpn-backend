@@ -55,6 +55,11 @@ type InlineKeyboardButton struct {
 	CallbackData string `json:"callback_data,omitempty"`
 }
 
+type BotCommand struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
 type ReplyKeyboardMarkup struct {
 	Keyboard              [][]KeyboardButton `json:"keyboard"`
 	ResizeKeyboard        bool               `json:"resize_keyboard,omitempty"`
@@ -231,6 +236,28 @@ func (c *Client) SendDocument(ctx context.Context, chatID int64, fileName string
 	var response sendDocumentResponse
 	if err := c.do(request, &response); err != nil {
 		return fmt.Errorf("send document: %w", err)
+	}
+
+	return nil
+}
+
+func (c *Client) SetCommands(ctx context.Context, commands []BotCommand) error {
+	payload, err := json.Marshal(commands)
+	if err != nil {
+		return fmt.Errorf("encode setMyCommands request: %w", err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/setMyCommands", strings.NewReader(url.Values{
+		"commands": []string{string(payload)},
+	}.Encode()))
+	if err != nil {
+		return fmt.Errorf("build setMyCommands request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	var response apiResponse
+	if err := c.do(request, &response); err != nil {
+		return fmt.Errorf("set my commands: %w", err)
 	}
 
 	return nil

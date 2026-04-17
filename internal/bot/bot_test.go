@@ -1222,10 +1222,12 @@ func TestSanitizeLoggedInputRedactsPendingInviteCodeEntry(t *testing.T) {
 }
 
 type stubTelegramClient struct {
-	sentMessages    []sentMessage
-	sentPhotos      []sentPhoto
-	callbackAnswers []callbackAnswer
-	sendPhotoErr    error
+	sentMessages     []sentMessage
+	sentPhotos       []sentPhoto
+	callbackAnswers  []callbackAnswer
+	sendPhotoErr     error
+	setCommands      []telegram.BotCommand
+	setCommandsCalls int
 }
 
 type sentMessage struct {
@@ -1298,6 +1300,12 @@ func (s *stubTelegramClient) AnswerCallbackQuery(_ context.Context, callbackQuer
 		id:   callbackQueryID,
 		text: text,
 	})
+	return nil
+}
+
+func (s *stubTelegramClient) SetCommands(_ context.Context, commands []telegram.BotCommand) error {
+	s.setCommandsCalls++
+	s.setCommands = append([]telegram.BotCommand(nil), commands...)
 	return nil
 }
 
@@ -1381,6 +1389,37 @@ func (s *stubBackendClient) RevokeDevice(_ context.Context, telegramUserID, devi
 
 func timePtr(value time.Time) *time.Time {
 	return &value
+}
+
+func TestClosedBetaBotCommands(t *testing.T) {
+	got := closedBetaBotCommands()
+	want := []telegram.BotCommand{
+		{Command: "start", Description: "Check access and begin"},
+		{Command: "help", Description: "Show help"},
+		{Command: "promo", Description: "Enter invite code"},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("closedBetaBotCommands() = %#v, want %#v", got, want)
+	}
+}
+
+func TestSyncCommandsUsesClosedBetaCommandSet(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{}
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	if err := b.syncCommands(context.Background()); err != nil {
+		t.Fatalf("syncCommands() error = %v", err)
+	}
+
+	if telegramClient.setCommandsCalls != 1 {
+		t.Fatalf("set commands calls = %d, want %d", telegramClient.setCommandsCalls, 1)
+	}
+
+	if !reflect.DeepEqual(telegramClient.setCommands, closedBetaBotCommands()) {
+		t.Fatalf("set commands = %#v, want %#v", telegramClient.setCommands, closedBetaBotCommands())
+	}
 }
 
 func assertReplyKeyboardTexts(t *testing.T, keyboard *telegram.ReplyKeyboardMarkup, want [][]string) {

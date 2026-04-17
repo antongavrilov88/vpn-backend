@@ -53,6 +53,7 @@ type telegramClient interface {
 	SendMessageWithReplyKeyboard(ctx context.Context, chatID int64, text string, keyboard telegram.ReplyKeyboardMarkup) error
 	SendDocument(ctx context.Context, chatID int64, fileName string, document []byte, caption string) error
 	AnswerCallbackQuery(ctx context.Context, callbackQueryID, text string) error
+	SetCommands(ctx context.Context, commands []telegram.BotCommand) error
 }
 
 type backendClient interface {
@@ -77,6 +78,10 @@ func New(logger *slog.Logger, telegramClient telegramClient, backendClient backe
 }
 
 func (b *Bot) Run(ctx context.Context) error {
+	if err := b.syncCommands(ctx); err != nil {
+		b.logger.Warn("sync telegram commands", "error", err)
+	}
+
 	if err := b.checkBackend(ctx); err != nil {
 		b.logger.Warn("backend api is unavailable at startup", "error", err)
 	}
@@ -226,6 +231,31 @@ func (b *Bot) checkBackend(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (b *Bot) syncCommands(ctx context.Context) error {
+	if b.telegram == nil {
+		return nil
+	}
+
+	return b.telegram.SetCommands(ctx, closedBetaBotCommands())
+}
+
+func closedBetaBotCommands() []telegram.BotCommand {
+	return []telegram.BotCommand{
+		{
+			Command:     "start",
+			Description: "Check access and begin",
+		},
+		{
+			Command:     "help",
+			Description: "Show help",
+		},
+		{
+			Command:     "promo",
+			Description: "Enter invite code",
+		},
+	}
 }
 
 func (b *Bot) handleCallbackQuery(ctx context.Context, callback *telegram.CallbackQuery) error {
