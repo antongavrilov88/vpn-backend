@@ -9,6 +9,16 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
 
+  migrate:
+    image: ghcr.io/antongavrilov88/vpn-backend-migrate:${APP_IMAGE_TAG:-latest}
+    profiles: ["tools"]
+    depends_on:
+      - db
+    environment:
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: postgres://vpn:vpnpass@db:5432/vpn?sslmode=disable
+    command: ["-dir", "/app/migrations", "up"]
+
   api:
     image: ghcr.io/antongavrilov88/vpn-backend-api:${APP_IMAGE_TAG:-latest}
     restart: unless-stopped

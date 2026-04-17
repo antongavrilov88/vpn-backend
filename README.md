@@ -141,6 +141,54 @@ make api-run
 make bot-run
 ```
 
+## Manual CI/CD Deploy
+
+The repository includes a manual GitHub Actions workflow at
+[`/.github/workflows/manual-apphost-deploy.yml`](/Users/antongavrilov/Desktop/workspace/vpn-backend/.github/workflows/manual-apphost-deploy.yml)
+for the app-host path.
+
+It does three things:
+
+- builds `api`, `bot`, and `migrate` images with Docker Buildx for `linux/amd64`
+- pushes them to GHCR as:
+  - `ghcr.io/antongavrilov88/vpn-backend-api:<git-sha>`
+  - `ghcr.io/antongavrilov88/vpn-backend-bot:<git-sha>`
+  - `ghcr.io/antongavrilov88/vpn-backend-migrate:<git-sha>`
+- connects to app-host over SSH, uploads the compose file, pulls fresh images, runs migrations, and restarts `api` and `bot`
+
+Required GitHub Actions secrets:
+
+- `APP_HOST`
+- `APP_HOST_USER`
+- `APP_HOST_SSH_KEY`
+
+Optional repository variables:
+
+- `APP_HOST_PORT`
+  Default: `22`
+- `APP_HOST_DEPLOY_DIR`
+  Default: `/opt/vpn`
+
+The deploy step uploads [deploy/docker-compose.apphost.yml](/Users/antongavrilov/Desktop/workspace/vpn-backend/deploy/docker-compose.apphost.yml:1)
+to `${APP_HOST_DEPLOY_DIR}/docker-compose.yml` on the host and then runs the equivalent of:
+
+```bash
+docker compose pull migrate api bot
+docker compose --profile tools run --rm migrate
+docker compose up -d api bot
+```
+
+The app-host user must be able to:
+
+- write to `${APP_HOST_DEPLOY_DIR}`
+- run `docker compose`
+- pull from GHCR during the workflow session
+
+If GHCR packages are private, ensure this repository's workflow has package access.
+The workflow uses its built-in `GITHUB_TOKEN` for both push and deploy-time registry login.
+
+GitHub only allows `workflow_dispatch` runs when the workflow file exists on the default branch, so merge the workflow first before expecting the Run workflow button to appear for general use.
+
 ## Notes
 
 - The bot is a thin client over backend API.
