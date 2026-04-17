@@ -18,23 +18,26 @@ import (
 )
 
 type Bot struct {
-	logger      *slog.Logger
-	telegram    telegramClient
-	backend     backendClient
-	pollTimeout time.Duration
-	stateMu     sync.Mutex
-	pendingName map[int64]struct{}
+	logger            *slog.Logger
+	telegram          telegramClient
+	backend           backendClient
+	pollTimeout       time.Duration
+	stateMu           sync.Mutex
+	pendingName       map[int64]struct{}
+	pendingInviteCode map[int64]struct{}
 }
 
 const (
-	maxDeviceNameLength  = 128
-	deviceActionPrefix   = "device"
-	deviceActionConfig   = "config"
-	deviceActionShowQR   = "qr"
-	deviceActionRevoke   = "revoke"
-	menuDevicesLabel     = "My devices"
-	menuCreateLabel      = "Create device"
-	menuHelpLabel        = "Help"
+	maxDeviceNameLength = 128
+	maxInviteCodeLength = 128
+	deviceActionPrefix  = "device"
+	deviceActionConfig  = "config"
+	deviceActionShowQR  = "qr"
+	deviceActionRevoke  = "revoke"
+	menuDevicesLabel    = "My devices"
+	menuCreateLabel     = "Create device"
+	menuInviteCodeLabel = "Enter invite code"
+	menuHelpLabel       = "Help"
 )
 
 type telegramClient interface {
@@ -48,6 +51,8 @@ type telegramClient interface {
 
 type backendClient interface {
 	backendapi.HealthChecker
+	GetAccessStatus(ctx context.Context, telegramUserID int64) (*backendapi.AccessStatusResult, error)
+	ApplyInviteCode(ctx context.Context, telegramUserID int64, code string) (*backendapi.AccessStatusResult, error)
 	ListDevices(ctx context.Context, telegramUserID int64) (*backendapi.ListDevicesResult, error)
 	CreateDevice(ctx context.Context, telegramUserID int64, name string) (*backendapi.CreateDeviceResult, error)
 	ResendDeviceConfig(ctx context.Context, telegramUserID, deviceID int64) (*backendapi.ResendDeviceConfigResult, error)
@@ -56,11 +61,12 @@ type backendClient interface {
 
 func New(logger *slog.Logger, telegramClient telegramClient, backendClient backendClient, pollTimeout time.Duration) *Bot {
 	return &Bot{
-		logger:      logger,
-		telegram:    telegramClient,
-		backend:     backendClient,
-		pollTimeout: pollTimeout,
-		pendingName: make(map[int64]struct{}),
+		logger:            logger,
+		telegram:          telegramClient,
+		backend:           backendClient,
+		pollTimeout:       pollTimeout,
+		pendingName:       make(map[int64]struct{}),
+		pendingInviteCode: make(map[int64]struct{}),
 	}
 }
 
@@ -119,18 +125,21 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) erro
 
 	b.logger.Info(
 		"handle telegram command",
-		"command", trimmedText,
+		"command", sanitizeLoggedInput(trimmedText, fields[0], b.hasPendingInviteCode(message.Chat.ID)),
 		"chat_id", message.Chat.ID,
 		"telegram_user_id", telegramUserID,
 	)
 
 	if menuCommand, ok := normalizeMenuCommand(trimmedText); ok {
 		b.clearPendingDeviceName(message.Chat.ID)
+		b.clearPendingInviteCode(message.Chat.ID)
 		switch menuCommand {
 		case "/devices":
 			return b.handleDevices(ctx, message)
 		case "/newdevice":
 			return b.handleNewDevice(ctx, message, "")
+		case "/promo":
+			return b.handlePromo(ctx, message, "")
 		case "/help":
 			return b.sendMenuMessage(ctx, message.Chat.ID, helpMessage())
 		}
@@ -140,23 +149,34 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) erro
 		if fields[0] != "/newdevice" {
 			b.clearPendingDeviceName(message.Chat.ID)
 		}
+		if fields[0] != "/promo" {
+			b.clearPendingInviteCode(message.Chat.ID)
+		}
 	}
 
 	if b.hasPendingDeviceName(message.Chat.ID) && !strings.HasPrefix(fields[0], "/") {
 		return b.handlePendingDeviceName(ctx, message, trimmedText)
 	}
 
+	if b.hasPendingInviteCode(message.Chat.ID) && !strings.HasPrefix(fields[0], "/") {
+		return b.handlePendingInviteCode(ctx, message, trimmedText)
+	}
+
 	switch fields[0] {
 	case "/start":
 		b.clearPendingDeviceName(message.Chat.ID)
-		return b.sendMenuMessage(ctx, message.Chat.ID, b.startMessage(ctx))
+		b.clearPendingInviteCode(message.Chat.ID)
+		return b.handleStart(ctx, message)
 	case "/help":
 		b.clearPendingDeviceName(message.Chat.ID)
+		b.clearPendingInviteCode(message.Chat.ID)
 		return b.sendMenuMessage(ctx, message.Chat.ID, helpMessage())
 	case "/devices":
 		return b.handleDevices(ctx, message)
 	case "/newdevice":
 		return b.handleNewDevice(ctx, message, strings.TrimSpace(strings.TrimPrefix(message.Text, fields[0])))
+	case "/promo":
+		return b.handlePromo(ctx, message, strings.TrimSpace(strings.TrimPrefix(message.Text, fields[0])))
 	case "/config":
 		return b.handleConfig(ctx, message, strings.TrimSpace(strings.TrimPrefix(message.Text, fields[0])))
 	case "/revoke":
@@ -166,17 +186,29 @@ func (b *Bot) handleMessage(ctx context.Context, message *telegram.Message) erro
 	}
 }
 
-func (b *Bot) startMessage(ctx context.Context) string {
-	if err := b.checkBackend(ctx); err != nil {
-		b.logger.Warn("backend api is unavailable for /start", "error", err)
-		return "VPN bot is connected, but backend API is temporarily unavailable.\n\nUse /help to see available commands."
+func (b *Bot) handleStart(ctx context.Context, message *telegram.Message) error {
+	if message.From == nil {
+		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
 	}
 
-	return "VPN bot is connected and backend API is reachable.\n\nUse /help to see available commands."
+	result, err := b.backend.GetAccessStatus(ctx, message.From.ID)
+	if err != nil {
+		b.clearPendingInviteCode(message.Chat.ID)
+		b.logger.Error("get access status via backend", "telegram_user_id", message.From.ID, "error", err)
+		return b.sendMenuMessage(ctx, message.Chat.ID, "VPN bot is connected, but backend API is temporarily unavailable.\n\nPlease try again in a moment.")
+	}
+
+	if shouldPromptInviteCodeEntry(result) {
+		b.markPendingInviteCode(message.Chat.ID)
+	} else {
+		b.clearPendingInviteCode(message.Chat.ID)
+	}
+
+	return b.sendMenuMessage(ctx, message.Chat.ID, formatStartAccessMessage(result))
 }
 
 func helpMessage() string {
-	return "Available commands:\n/start - show welcome message\n/help - show this help\n/devices - show your devices and available actions\n/newdevice - create a new device\n\nYou can also use the buttons below."
+	return "Available commands:\n/start - show onboarding and access status\n/help - show this help\n/devices - show your devices and available actions\n/newdevice - create a new device\n/promo <code> - activate invite-only beta access\n\nYou can also use the buttons below."
 }
 
 func (b *Bot) checkBackend(ctx context.Context) error {
@@ -232,11 +264,11 @@ func (b *Bot) handleDevices(ctx context.Context, message *telegram.Message) erro
 
 	result, err := b.backend.ListDevices(ctx, message.From.ID)
 	if err != nil {
-		b.logger.Error("list devices via backend", "telegram_user_id", message.From.ID, "error", err)
-		if errors.Is(err, backendapi.ErrNotFound) {
-			return b.sendMenuMessage(ctx, message.Chat.ID, "You are not linked to a VPN user yet.")
+		if shouldPromptInviteCodeEntryFromError(err) {
+			b.markPendingInviteCode(message.Chat.ID)
 		}
-		return b.sendMenuMessage(ctx, message.Chat.ID, "Failed to load devices right now. Please try again later.")
+		b.logger.Error("list devices via backend", "telegram_user_id", message.From.ID, "error", err)
+		return b.sendMenuMessage(ctx, message.Chat.ID, formatListDevicesError(err))
 	}
 
 	return b.sendDevicesList(ctx, message.Chat.ID, result)
@@ -246,6 +278,8 @@ func (b *Bot) handleNewDevice(ctx context.Context, message *telegram.Message, ra
 	if message.From == nil {
 		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
 	}
+
+	b.clearPendingInviteCode(message.Chat.ID)
 
 	if strings.TrimSpace(rawName) == "" {
 		b.markPendingDeviceName(message.Chat.ID)
@@ -265,6 +299,9 @@ func (b *Bot) handleNewDevice(ctx context.Context, message *telegram.Message, ra
 
 	result, err := b.backend.CreateDevice(ctx, message.From.ID, name)
 	if err != nil {
+		if shouldPromptInviteCodeEntryFromError(err) {
+			b.markPendingInviteCode(message.Chat.ID)
+		}
 		b.logger.Error("create device via backend", "telegram_user_id", message.From.ID, "device_name", name, "error", err)
 		return b.sendMenuMessage(ctx, message.Chat.ID, formatCreateDeviceError(err))
 	}
@@ -277,6 +314,38 @@ func (b *Bot) handleNewDevice(ctx context.Context, message *telegram.Message, ra
 	}
 
 	return b.sendConfigResult(ctx, message.Chat.ID, formatCreateDeviceMessage(result), deviceName, clientConfig)
+}
+
+func (b *Bot) handlePromo(ctx context.Context, message *telegram.Message, rawCode string) error {
+	if message.From == nil {
+		return b.sendMenuMessage(ctx, message.Chat.ID, "Cannot identify Telegram user for this command.")
+	}
+
+	b.clearPendingDeviceName(message.Chat.ID)
+
+	if strings.TrimSpace(rawCode) == "" {
+		b.markPendingInviteCode(message.Chat.ID)
+		return b.sendMenuMessage(ctx, message.Chat.ID, "Enter the invite code exactly as you received it.\n\nYou can also send /promo <code> in one message.")
+	}
+
+	b.clearPendingInviteCode(message.Chat.ID)
+
+	code, validationMessage := validateInviteCode(rawCode)
+	if validationMessage != "" {
+		return b.sendMenuMessage(ctx, message.Chat.ID, validationMessage)
+	}
+
+	if err := b.sendMenuMessage(ctx, message.Chat.ID, "Checking your invite code..."); err != nil {
+		return err
+	}
+
+	result, err := b.backend.ApplyInviteCode(ctx, message.From.ID, code)
+	if err != nil {
+		b.logger.Error("apply invite code via backend", "telegram_user_id", message.From.ID, "error", err)
+		return b.sendMenuMessage(ctx, message.Chat.ID, formatApplyInviteCodeError(err))
+	}
+
+	return b.sendMenuMessage(ctx, message.Chat.ID, formatApplyInviteCodeSuccess(result))
 }
 
 func (b *Bot) handleConfig(ctx context.Context, message *telegram.Message, rawDeviceID string) error {
@@ -558,7 +627,7 @@ func formatCreateDeviceError(err error) string {
 		case apiErr.StatusCode == 400 && apiErr.Message != "":
 			return fmt.Sprintf("Cannot create device: %s.", apiErr.Message)
 		case apiErr.StatusCode == 403:
-			return "You are not allowed to create a device right now."
+			return formatInactiveAccessPrompt()
 		case apiErr.StatusCode == 409 && apiErr.Message != "":
 			return fmt.Sprintf("Cannot create device: %s.", apiErr.Message)
 		default:
@@ -567,6 +636,24 @@ func formatCreateDeviceError(err error) string {
 	}
 
 	return "Failed to create the device right now. Please try again later."
+}
+
+func formatListDevicesError(err error) string {
+	if errors.Is(err, backendapi.ErrNotFound) {
+		return "You are not linked to a VPN user yet."
+	}
+
+	var apiErr *backendapi.APIError
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.StatusCode == 403:
+			return formatInactiveAccessPrompt()
+		default:
+			return "Failed to load devices right now. Please try again later."
+		}
+	}
+
+	return "Failed to load devices right now. Please try again later."
 }
 
 func formatResendDeviceConfigMessage(result *backendapi.ResendDeviceConfigResult) string {
@@ -725,6 +812,25 @@ func validateDeviceName(rawName string) (string, string) {
 	return name, ""
 }
 
+func validateInviteCode(rawCode string) (string, string) {
+	code := strings.TrimSpace(rawCode)
+	if code == "" {
+		return "", "Usage: /promo <invite_code>"
+	}
+
+	if utf8.RuneCountInString(code) > maxInviteCodeLength {
+		return "", fmt.Sprintf("Invite code is too long. Use %d characters or fewer.", maxInviteCodeLength)
+	}
+
+	for _, r := range code {
+		if unicode.IsControl(r) {
+			return "", "Invite code must be a single line of plain text."
+		}
+	}
+
+	return code, ""
+}
+
 func parseDeviceID(rawValue, usage string) (int64, string) {
 	value := strings.TrimSpace(rawValue)
 	if value == "" {
@@ -745,11 +851,29 @@ func normalizeMenuCommand(text string) (string, bool) {
 		return "/devices", true
 	case menuCreateLabel:
 		return "/newdevice", true
+	case menuInviteCodeLabel:
+		return "/promo", true
 	case menuHelpLabel:
 		return "/help", true
 	default:
 		return "", false
 	}
+}
+
+func sanitizeLoggedInput(rawText, firstField string, pendingInviteCode bool) string {
+	if pendingInviteCode && !strings.HasPrefix(firstField, "/") {
+		return "<invite_code_redacted>"
+	}
+
+	if firstField == "/promo" {
+		if strings.TrimSpace(strings.TrimPrefix(rawText, firstField)) == "" {
+			return "/promo"
+		}
+
+		return "/promo <invite_code_redacted>"
+	}
+
+	return rawText
 }
 
 func mainMenuKeyboard() telegram.ReplyKeyboardMarkup {
@@ -760,6 +884,7 @@ func mainMenuKeyboard() telegram.ReplyKeyboardMarkup {
 				{Text: menuCreateLabel},
 			},
 			{
+				{Text: menuInviteCodeLabel},
 				{Text: menuHelpLabel},
 			},
 		},
@@ -767,6 +892,157 @@ func mainMenuKeyboard() telegram.ReplyKeyboardMarkup {
 		IsPersistent:          true,
 		InputFieldPlaceholder: "Choose an action",
 	}
+}
+
+func formatStartAccessMessage(result *backendapi.AccessStatusResult) string {
+	if result == nil {
+		return "VPN bot is connected.\n\nUse the buttons below to continue."
+	}
+
+	if result.AccessActive {
+		return formatActiveAccessMessage(result)
+	}
+
+	return formatInactiveAccessMessage(result)
+}
+
+func formatActiveAccessMessage(result *backendapi.AccessStatusResult) string {
+	if result == nil {
+		return "Access is active.\n\nUse the buttons below to manage devices or create a new one."
+	}
+
+	if result.IsLifetime {
+		return "Access is active.\n\nClosed beta access is lifetime.\nUse the buttons below to manage devices or create a new one."
+	}
+
+	if result.ExpiresAt != nil {
+		return fmt.Sprintf("Access is active.\n\nYour beta access is active until %s.\nUse the buttons below to manage devices or create a new one.", result.ExpiresAt.Format("2006-01-02"))
+	}
+
+	return "Access is active.\n\nUse the buttons below to manage devices or create a new one."
+}
+
+func formatInactiveAccessMessage(result *backendapi.AccessStatusResult) string {
+	switch {
+	case result == nil:
+		return formatInactiveAccessPrompt()
+	case result.DenialReason == "expired":
+		return "Your beta access has expired.\n\nEnter a new invite code to continue."
+	case result.DenialReason == "pending":
+		return "Your access is not active yet.\n\nEnter your invite code to continue onboarding."
+	case result.DenialReason == "canceled":
+		return "Your access is inactive right now.\n\nEnter an invite code to restore access."
+	case result.DenialReason == "user_blocked":
+		return "Access is currently blocked.\n\nIf this is unexpected, contact the operator."
+	case result.DenialReason == "user_deleted":
+		return "This account is inactive right now.\n\nIf this is unexpected, contact the operator."
+	default:
+		return "Closed beta access is not active yet.\n\nEnter your invite code to unlock VPN access."
+	}
+}
+
+func formatInactiveAccessPrompt() string {
+	return "Access is not active yet.\n\nTap Enter invite code below or send /promo <invite_code>."
+}
+
+func shouldPromptInviteCodeEntry(result *backendapi.AccessStatusResult) bool {
+	if result == nil || result.AccessActive {
+		return false
+	}
+
+	switch result.DenialReason {
+	case "user_blocked", "user_deleted":
+		return false
+	default:
+		return true
+	}
+}
+
+func shouldPromptInviteCodeEntryFromError(err error) bool {
+	var apiErr *backendapi.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == 403
+}
+
+func formatApplyInviteCodeSuccess(result *backendapi.AccessStatusResult) string {
+	if result == nil || !result.AccessActive {
+		return "Invite code applied.\n\nAccess details were updated."
+	}
+
+	if result.IsLifetime {
+		return "Invite code accepted.\n\nLifetime beta access is now active.\nYou can create your first device."
+	}
+
+	if result.ExpiresAt != nil {
+		return fmt.Sprintf("Invite code accepted.\n\nAccess is active until %s.\nYou can create your first device.", result.ExpiresAt.Format("2006-01-02"))
+	}
+
+	return "Invite code accepted.\n\nAccess is active now.\nYou can create your first device."
+}
+
+func formatApplyInviteCodeError(err error) string {
+	if errors.Is(err, backendapi.ErrNotFound) {
+		return "That invite code is not valid."
+	}
+
+	var apiErr *backendapi.APIError
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.StatusCode == 404:
+			return "That invite code is not valid."
+		case apiErr.StatusCode == 400 && apiErr.Message != "":
+			return fmt.Sprintf("Cannot apply invite code: %s.", apiErr.Message)
+		case apiErr.StatusCode == 403:
+			return "This account cannot activate access right now."
+		case apiErr.StatusCode == 409 && apiErr.Message != "":
+			switch apiErr.Message {
+			case "promo code is inactive":
+				return "That invite code is inactive or expired."
+			case "promo code already used":
+				return "You have already used that invite code."
+			case "promo code usage limit reached":
+				return "That invite code has already been fully used."
+			case "promo code does not grant access":
+				return "That code does not unlock closed beta access."
+			default:
+				return fmt.Sprintf("Cannot apply invite code: %s.", apiErr.Message)
+			}
+		default:
+			return "Failed to apply the invite code right now. Please try again later."
+		}
+	}
+
+	return "Failed to apply the invite code right now. Please try again later."
+}
+
+func (b *Bot) markPendingInviteCode(chatID int64) {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+
+	b.pendingInviteCode[chatID] = struct{}{}
+}
+
+func (b *Bot) clearPendingInviteCode(chatID int64) {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+
+	delete(b.pendingInviteCode, chatID)
+}
+
+func (b *Bot) hasPendingInviteCode(chatID int64) bool {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+
+	_, ok := b.pendingInviteCode[chatID]
+	return ok
+}
+
+func (b *Bot) handlePendingInviteCode(ctx context.Context, message *telegram.Message, rawCode string) error {
+	code, validationMessage := validateInviteCode(rawCode)
+	if validationMessage != "" {
+		return b.sendMenuMessage(ctx, message.Chat.ID, validationMessage)
+	}
+
+	return b.handlePromo(ctx, message, code)
 }
 
 func (b *Bot) markPendingDeviceName(chatID int64) {

@@ -90,6 +90,80 @@ func TestClientListDevicesReturnsBootstrapError(t *testing.T) {
 	}
 }
 
+func TestClientGetAccessStatus(t *testing.T) {
+	client, err := NewClient("http://backend.local", time.Second)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	client.httpClient.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodGet || r.URL.Path != "/access" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+
+		if got := r.Header.Get("X-Telegram-ID"); got != "777" {
+			t.Fatalf("X-Telegram-ID = %q, want %q", got, "777")
+		}
+
+		return jsonResponse(http.StatusOK, AccessStatusResult{
+			AccessActive:    true,
+			IsLifetime:      true,
+			CanCreateDevice: true,
+		}), nil
+	})
+
+	result, err := client.GetAccessStatus(context.Background(), 777)
+	if err != nil {
+		t.Fatalf("GetAccessStatus() error = %v", err)
+	}
+
+	if result == nil || !result.AccessActive || !result.IsLifetime || !result.CanCreateDevice {
+		t.Fatalf("GetAccessStatus() result = %#v, want active lifetime access", result)
+	}
+}
+
+func TestClientApplyInviteCode(t *testing.T) {
+	client, err := NewClient("http://backend.local", time.Second)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	client.httpClient.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.Path != "/access/apply-invite-code" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+
+		if got := r.Header.Get("X-Telegram-ID"); got != "777" {
+			t.Fatalf("X-Telegram-ID = %q, want %q", got, "777")
+		}
+
+		var payload struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if payload.Code != "BETA-ANTON" {
+			t.Fatalf("code = %q, want %q", payload.Code, "BETA-ANTON")
+		}
+
+		return jsonResponse(http.StatusOK, AccessStatusResult{
+			AccessActive:    true,
+			IsLifetime:      false,
+			CanCreateDevice: true,
+		}), nil
+	})
+
+	result, err := client.ApplyInviteCode(context.Background(), 777, "BETA-ANTON")
+	if err != nil {
+		t.Fatalf("ApplyInviteCode() error = %v", err)
+	}
+
+	if result == nil || !result.AccessActive || !result.CanCreateDevice {
+		t.Fatalf("ApplyInviteCode() result = %#v, want active access", result)
+	}
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
