@@ -148,6 +148,10 @@ func TestHandleMessageStartWhenBackendUnavailable(t *testing.T) {
 	if got := telegramClient.sentMessages[0].text; got != want {
 		t.Fatalf("message = %q, want %q", got, want)
 	}
+
+	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
+		{menuHelpLabel},
+	})
 }
 
 func TestHandleMessageStartWhenAccessInactive(t *testing.T) {
@@ -601,6 +605,39 @@ func TestHandleMessageDevicesWhenAccessInactiveDoesNotListDevices(t *testing.T) 
 
 	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
 		{menuInviteCodeLabel, menuHelpLabel},
+	})
+}
+
+func TestHandleMessageDevicesWhenAccessStatusUnavailableShowsHelpOnlyKeyboard(t *testing.T) {
+	telegramClient := &stubTelegramClient{}
+	backendClient := &stubBackendClient{accessStatusErr: errors.New("timeout")}
+
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), telegramClient, backendClient, time.Second)
+
+	err := b.handleMessage(context.Background(), &telegram.Message{
+		Text: "/devices",
+		Chat: telegram.Chat{ID: 99},
+		From: &telegram.User{ID: 777},
+	})
+	if err != nil {
+		t.Fatalf("handleMessage() error = %v", err)
+	}
+
+	if backendClient.listDevicesCalls != 0 {
+		t.Fatalf("list device calls = %d, want %d", backendClient.listDevicesCalls, 0)
+	}
+
+	if len(telegramClient.sentMessages) != 1 {
+		t.Fatalf("sent messages = %d, want %d", len(telegramClient.sentMessages), 1)
+	}
+
+	want := "VPN bot is connected, but backend API is temporarily unavailable.\n\nPlease try again in a moment."
+	if got := telegramClient.sentMessages[0].text; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+
+	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
+		{menuHelpLabel},
 	})
 }
 

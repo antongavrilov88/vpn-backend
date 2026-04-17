@@ -206,7 +206,7 @@ func (b *Bot) handleStart(ctx context.Context, message *telegram.Message) error 
 	result, err := b.getAccessStatus(ctx, message.From.ID)
 	if err != nil {
 		b.clearPendingInviteCode(message.Chat.ID)
-		return b.sendMenuMessage(ctx, message.Chat.ID, "VPN bot is connected, but backend API is temporarily unavailable.\n\nPlease try again in a moment.")
+		return b.sendBackendUnavailableMessage(ctx, message.Chat.ID)
 	}
 
 	if shouldPromptInviteCodeEntry(result) {
@@ -225,7 +225,7 @@ func (b *Bot) handleHelp(ctx context.Context, message *telegram.Message) error {
 
 	result, err := b.getAccessStatus(ctx, message.From.ID)
 	if err != nil {
-		return b.sendMenuMessage(ctx, message.Chat.ID, "VPN bot is connected, but backend API is temporarily unavailable.\n\nPlease try again in a moment.")
+		return b.sendBackendUnavailableMessage(ctx, message.Chat.ID)
 	}
 
 	if !result.AccessActive {
@@ -876,7 +876,7 @@ func (b *Bot) ensureActiveAccess(ctx context.Context, chatID, telegramUserID int
 func (b *Bot) ensureActiveAccessWithStatus(ctx context.Context, chatID, telegramUserID int64) (bool, *backendapi.AccessStatusResult, error) {
 	result, err := b.getAccessStatus(ctx, telegramUserID)
 	if err != nil {
-		return false, nil, b.sendMenuMessage(ctx, chatID, "VPN bot is connected, but backend API is temporarily unavailable.\n\nPlease try again in a moment.")
+		return false, nil, b.sendBackendUnavailableMessage(ctx, chatID)
 	}
 
 	if result.AccessActive {
@@ -919,6 +919,10 @@ func (b *Bot) sendInvitePromptMessage(ctx context.Context, chatID int64, text st
 
 func (b *Bot) sendAccessAwareMessage(ctx context.Context, chatID int64, text string, result *backendapi.AccessStatusResult) error {
 	return b.sendMenuMessageWithKeyboard(ctx, chatID, text, keyboardForAccessStatus(result))
+}
+
+func (b *Bot) sendBackendUnavailableMessage(ctx context.Context, chatID int64) error {
+	return b.sendMenuMessageWithKeyboard(ctx, chatID, "VPN bot is connected, but backend API is temporarily unavailable.\n\nPlease try again in a moment.", menuKeyboard(menuVariantHelpOnly))
 }
 
 func (b *Bot) sendMenuMessageWithKeyboard(ctx context.Context, chatID int64, text string, keyboard telegram.ReplyKeyboardMarkup) error {
