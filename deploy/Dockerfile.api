@@ -28,4 +28,6 @@ USER appuser
 
 EXPOSE 8080
 
+LABEL org.opencontainers.image.source=https://github.com/antongavrilov88/vpn-backend
+
 ENTRYPOINT ["/app/api"]
