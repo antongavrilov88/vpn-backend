@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,11 @@ func TestHandleMessageStartWhenBackendHealthy(t *testing.T) {
 	if got := telegramClient.sentMessages[0].text; got != want {
 		t.Fatalf("message = %q, want %q", got, want)
 	}
+
+	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
+		{menuDevicesLabel, menuCreateLabel},
+		{menuInviteCodeLabel, menuHelpLabel},
+	})
 }
 
 func TestHandleMessageStartWhenBackendUnavailable(t *testing.T) {
@@ -169,6 +175,10 @@ func TestHandleMessageStartWhenAccessInactive(t *testing.T) {
 	if got := telegramClient.sentMessages[0].text; got != want {
 		t.Fatalf("message = %q, want %q", got, want)
 	}
+
+	assertReplyKeyboardTexts(t, telegramClient.sentMessages[0].replyKB, [][]string{
+		{menuInviteCodeLabel, menuHelpLabel},
+	})
 }
 
 func TestHandleMessageStartInactiveAcceptsNextPlainTextInviteCode(t *testing.T) {
@@ -292,6 +302,10 @@ func TestHandleMessagePromoInvalidCode(t *testing.T) {
 	if got := telegramClient.sentMessages[1].text; got != "That invite code is not valid." {
 		t.Fatalf("message = %q, want invalid code message", got)
 	}
+
+	assertReplyKeyboardTexts(t, telegramClient.sentMessages[1].replyKB, [][]string{
+		{menuInviteCodeLabel, menuHelpLabel},
+	})
 }
 
 func TestHandleMessageDevicesSuccess(t *testing.T) {
@@ -765,6 +779,12 @@ func TestHandleMessageNewDeviceMapsBackendErrors(t *testing.T) {
 
 			if got := telegramClient.sentMessages[1].text; got != test.wantMessage {
 				t.Fatalf("message = %q, want %q", got, test.wantMessage)
+			}
+
+			if test.name == "forbidden" {
+				assertReplyKeyboardTexts(t, telegramClient.sentMessages[1].replyKB, [][]string{
+					{menuInviteCodeLabel, menuHelpLabel},
+				})
 			}
 		})
 	}
@@ -1361,4 +1381,34 @@ func (s *stubBackendClient) RevokeDevice(_ context.Context, telegramUserID, devi
 
 func timePtr(value time.Time) *time.Time {
 	return &value
+}
+
+func assertReplyKeyboardTexts(t *testing.T, keyboard *telegram.ReplyKeyboardMarkup, want [][]string) {
+	t.Helper()
+
+	if keyboard == nil {
+		t.Fatal("reply keyboard = nil, want keyboard")
+	}
+
+	got := replyKeyboardTexts(keyboard)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("reply keyboard = %#v, want %#v", got, want)
+	}
+}
+
+func replyKeyboardTexts(keyboard *telegram.ReplyKeyboardMarkup) [][]string {
+	if keyboard == nil {
+		return nil
+	}
+
+	rows := make([][]string, 0, len(keyboard.Keyboard))
+	for _, row := range keyboard.Keyboard {
+		texts := make([]string, 0, len(row))
+		for _, button := range row {
+			texts = append(texts, button.Text)
+		}
+		rows = append(rows, texts)
+	}
+
+	return rows
 }

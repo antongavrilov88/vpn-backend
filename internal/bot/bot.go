@@ -27,6 +27,8 @@ type Bot struct {
 	pendingInviteCode map[int64]struct{}
 }
 
+type menuVariant int
+
 const (
 	maxDeviceNameLength = 128
 	maxInviteCodeLength = 128
@@ -38,6 +40,10 @@ const (
 	menuCreateLabel     = "Create device"
 	menuInviteCodeLabel = "Enter invite code"
 	menuHelpLabel       = "Help"
+
+	menuVariantActive menuVariant = iota
+	menuVariantInviteOnly
+	menuVariantHelpOnly
 )
 
 type telegramClient interface {
@@ -204,7 +210,7 @@ func (b *Bot) handleStart(ctx context.Context, message *telegram.Message) error 
 		b.clearPendingInviteCode(message.Chat.ID)
 	}
 
-	return b.sendMenuMessage(ctx, message.Chat.ID, formatStartAccessMessage(result))
+	return b.sendAccessAwareMessage(ctx, message.Chat.ID, formatStartAccessMessage(result), result)
 }
 
 func helpMessage() string {
@@ -266,6 +272,7 @@ func (b *Bot) handleDevices(ctx context.Context, message *telegram.Message) erro
 	if err != nil {
 		if shouldPromptInviteCodeEntryFromError(err) {
 			b.markPendingInviteCode(message.Chat.ID)
+			return b.sendInvitePromptMessage(ctx, message.Chat.ID, formatListDevicesError(err))
 		}
 		b.logger.Error("list devices via backend", "telegram_user_id", message.From.ID, "error", err)
 		return b.sendMenuMessage(ctx, message.Chat.ID, formatListDevicesError(err))
@@ -301,6 +308,7 @@ func (b *Bot) handleNewDevice(ctx context.Context, message *telegram.Message, ra
 	if err != nil {
 		if shouldPromptInviteCodeEntryFromError(err) {
 			b.markPendingInviteCode(message.Chat.ID)
+			return b.sendInvitePromptMessage(ctx, message.Chat.ID, formatCreateDeviceError(err))
 		}
 		b.logger.Error("create device via backend", "telegram_user_id", message.From.ID, "device_name", name, "error", err)
 		return b.sendMenuMessage(ctx, message.Chat.ID, formatCreateDeviceError(err))
@@ -325,24 +333,24 @@ func (b *Bot) handlePromo(ctx context.Context, message *telegram.Message, rawCod
 
 	if strings.TrimSpace(rawCode) == "" {
 		b.markPendingInviteCode(message.Chat.ID)
-		return b.sendMenuMessage(ctx, message.Chat.ID, "Enter the invite code exactly as you received it.\n\nYou can also send /promo <code> in one message.")
+		return b.sendInvitePromptMessage(ctx, message.Chat.ID, "Enter the invite code exactly as you received it.\n\nYou can also send /promo <code> in one message.")
 	}
 
 	b.clearPendingInviteCode(message.Chat.ID)
 
 	code, validationMessage := validateInviteCode(rawCode)
 	if validationMessage != "" {
-		return b.sendMenuMessage(ctx, message.Chat.ID, validationMessage)
+		return b.sendInvitePromptMessage(ctx, message.Chat.ID, validationMessage)
 	}
 
-	if err := b.sendMenuMessage(ctx, message.Chat.ID, "Checking your invite code..."); err != nil {
+	if err := b.sendInvitePromptMessage(ctx, message.Chat.ID, "Checking your invite code..."); err != nil {
 		return err
 	}
 
 	result, err := b.backend.ApplyInviteCode(ctx, message.From.ID, code)
 	if err != nil {
 		b.logger.Error("apply invite code via backend", "telegram_user_id", message.From.ID, "error", err)
-		return b.sendMenuMessage(ctx, message.Chat.ID, formatApplyInviteCodeError(err))
+		return b.sendInvitePromptMessage(ctx, message.Chat.ID, formatApplyInviteCodeError(err))
 	}
 
 	return b.sendMenuMessage(ctx, message.Chat.ID, formatApplyInviteCodeSuccess(result))
@@ -754,7 +762,19 @@ func (b *Bot) answerCallback(ctx context.Context, callbackQueryID, text string) 
 }
 
 func (b *Bot) sendMenuMessage(ctx context.Context, chatID int64, text string) error {
-	return b.telegram.SendMessageWithReplyKeyboard(ctx, chatID, text, mainMenuKeyboard())
+	return b.sendMenuMessageWithKeyboard(ctx, chatID, text, menuKeyboard(menuVariantActive))
+}
+
+func (b *Bot) sendInvitePromptMessage(ctx context.Context, chatID int64, text string) error {
+	return b.sendMenuMessageWithKeyboard(ctx, chatID, text, menuKeyboard(menuVariantInviteOnly))
+}
+
+func (b *Bot) sendAccessAwareMessage(ctx context.Context, chatID int64, text string, result *backendapi.AccessStatusResult) error {
+	return b.sendMenuMessageWithKeyboard(ctx, chatID, text, keyboardForAccessStatus(result))
+}
+
+func (b *Bot) sendMenuMessageWithKeyboard(ctx context.Context, chatID int64, text string, keyboard telegram.ReplyKeyboardMarkup) error {
+	return b.telegram.SendMessageWithReplyKeyboard(ctx, chatID, text, keyboard)
 }
 
 func (b *Bot) sendConfigMessage(ctx context.Context, chatID int64, text string) error {
@@ -876,9 +896,29 @@ func sanitizeLoggedInput(rawText, firstField string, pendingInviteCode bool) str
 	return rawText
 }
 
-func mainMenuKeyboard() telegram.ReplyKeyboardMarkup {
-	return telegram.ReplyKeyboardMarkup{
-		Keyboard: [][]telegram.KeyboardButton{
+func menuKeyboard(variant menuVariant) telegram.ReplyKeyboardMarkup {
+	keyboard := telegram.ReplyKeyboardMarkup{
+		ResizeKeyboard:        true,
+		IsPersistent:          true,
+		InputFieldPlaceholder: "Choose an action",
+	}
+
+	switch variant {
+	case menuVariantInviteOnly:
+		keyboard.Keyboard = [][]telegram.KeyboardButton{
+			{
+				{Text: menuInviteCodeLabel},
+				{Text: menuHelpLabel},
+			},
+		}
+	case menuVariantHelpOnly:
+		keyboard.Keyboard = [][]telegram.KeyboardButton{
+			{
+				{Text: menuHelpLabel},
+			},
+		}
+	default:
+		keyboard.Keyboard = [][]telegram.KeyboardButton{
 			{
 				{Text: menuDevicesLabel},
 				{Text: menuCreateLabel},
@@ -887,10 +927,22 @@ func mainMenuKeyboard() telegram.ReplyKeyboardMarkup {
 				{Text: menuInviteCodeLabel},
 				{Text: menuHelpLabel},
 			},
-		},
-		ResizeKeyboard:        true,
-		IsPersistent:          true,
-		InputFieldPlaceholder: "Choose an action",
+		}
+	}
+
+	return keyboard
+}
+
+func keyboardForAccessStatus(result *backendapi.AccessStatusResult) telegram.ReplyKeyboardMarkup {
+	if result == nil || result.AccessActive {
+		return menuKeyboard(menuVariantActive)
+	}
+
+	switch result.DenialReason {
+	case "user_blocked", "user_deleted":
+		return menuKeyboard(menuVariantHelpOnly)
+	default:
+		return menuKeyboard(menuVariantInviteOnly)
 	}
 }
 
