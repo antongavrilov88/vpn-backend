@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vpn
+      POSTGRES_USER: vpn
+      POSTGRES_PASSWORD: vpnpass
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  migrate:
+    image: ghcr.io/antongavrilov88/vpn-backend-migrate:${APP_IMAGE_TAG:-latest}
+    profiles: ["tools"]
+    depends_on:
+      - db
+    environment:
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: postgres://vpn:vpnpass@db:5432/vpn?sslmode=disable
+    command: ["-dir", "/app/migrations", "up"]
+
+  api:
+    image: ghcr.io/antongavrilov88/vpn-backend-api:${APP_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - db
+    env_file:
+      - /opt/vpn/env/api.env
+    volumes:
+      - /opt/vpn/secrets/proxy_ed25519:/run/secrets/proxy_ssh_key:ro
+      - /opt/vpn/secrets/proxy_known_hosts:/run/secrets/proxy_known_hosts:ro
+    ports:
+      - "8080:8080"
+
+  bot:
+    image: ghcr.io/antongavrilov88/vpn-backend-bot:${APP_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - api
+    env_file:
+      - /opt/vpn/env/bot.env
+
+volumes:
+  db_data:
