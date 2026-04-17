@@ -1,25 +1,34 @@
 services:
-  postgres:
-    image: postgres:17-alpine
+  db:
+    image: postgres:16
     restart: unless-stopped
-    ports:
-      - "${POSTGRES_PORT:-5433}:5432"
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-vpn_mvp}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: vpn
+      POSTGRES_USER: vpn
+      POSTGRES_PASSWORD: vpnpass
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-vpn_mvp}",
-        ]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 5s
+      - db_data:/var/lib/postgresql/data
+
+  api:
+    image: ghcr.io/antongavrilov88/vpn-backend-api:${APP_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - db
+    env_file:
+      - /opt/vpn/env/api.env
+    volumes:
+      - /opt/vpn/secrets/proxy_ed25519:/run/secrets/proxy_ssh_key:ro
+      - /opt/vpn/secrets/proxy_known_hosts:/run/secrets/proxy_known_hosts:ro
+    ports:
+      - "8080:8080"
+
+  bot:
+    image: ghcr.io/antongavrilov88/vpn-backend-bot:${APP_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - api
+    env_file:
+      - /opt/vpn/env/bot.env
 
 volumes:
-  postgres_data:
+  db_data:
