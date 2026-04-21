@@ -27,8 +27,8 @@ cp .env.local.example .env.local
 
 Both `make ...` and plain `go run ...` now read env files automatically in this order:
 
-- `.env.local`
 - `.env`
+- `.env.local`
 
 The example files are templates only. They are not loaded automatically.
 
@@ -38,6 +38,18 @@ For local work, keep real values in ignored files:
 - `.env.local` for machine-specific values and secrets
 
 That keeps git clean while still allowing `make ...` and `go run ...` to work without manual `export` commands.
+
+Detailed field-by-field guidance for:
+
+- local `.env`
+- machine-specific `.env.local`
+- app-host `/opt/vpn/env/api.env`
+- app-host `/opt/vpn/env/bot.env`
+- freeze-state `.env.freeze`
+- safe verification / backup flows
+
+is in:
+- [docs/runbooks/env-setup-and-testing.md](/Users/antongavrilov/Desktop/workspace/vpn-backend/docs/runbooks/env-setup-and-testing.md)
 
 Fill these only when you want `CreateDevice` to touch a real proxy/VPN setup:
 
@@ -135,6 +147,29 @@ make bot-run
 
 Bot setup and behavior:
 - [docs/telegram-bot.md](/Users/antongavrilov/Desktop/workspace/vpn-backend/docs/telegram-bot.md)
+
+## Freeze-State And Ops Scripts
+
+The repository now includes a freeze-state kit for the current working contour:
+
+- [docs/runbooks/golden-contour.md](/Users/antongavrilov/Desktop/workspace/vpn-backend/docs/runbooks/golden-contour.md)
+- [docs/secrets-inventory.md](/Users/antongavrilov/Desktop/workspace/vpn-backend/docs/secrets-inventory.md)
+- [docs/runbooks/env-setup-and-testing.md](/Users/antongavrilov/Desktop/workspace/vpn-backend/docs/runbooks/env-setup-and-testing.md)
+
+Operational scripts:
+
+- `bash scripts/verify_contour.sh`
+  Read-only contour verification plus optional disposable create/revoke smoke if `.env.freeze` contains `SMOKE_TELEGRAM_ID` or `SMOKE_USER_ID`.
+- `bash scripts/freeze_collect.sh`
+  Redacted operational snapshot into `artifacts/`.
+- `bash scripts/backup_bundle.sh`
+  Raw recovery bundle into `backup/`. This copies live secrets and recovery material.
+
+All three scripts are parameterizable:
+
+- `FREEZE_ENV_FILE=/path/to/custom.freeze`
+- `ARTIFACT_ROOT=/path/to/output-dir` for `freeze_collect.sh`
+- `BUNDLE_ROOT=/path/to/output-dir` for `backup_bundle.sh`
 
 ## Useful Commands
 
