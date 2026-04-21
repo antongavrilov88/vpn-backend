@@ -31,6 +31,7 @@ func TestLoad(t *testing.T) {
 	t.Setenv("PROXY_SSH_HOST", "proxy.internal")
 	t.Setenv("PROXY_SSH_PORT", "2222")
 	t.Setenv("PROXY_SSH_USER", "deploy")
+	t.Setenv("PROXY_SSH_CONFIG_PATH", "/keys/ssh_config.app")
 	t.Setenv("PROXY_SSH_PRIVATE_KEY_PATH", "/keys/proxy")
 	t.Setenv("PROXY_SSH_KNOWN_HOSTS_PATH", "/keys/known_hosts")
 	t.Setenv("PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", "false")
@@ -136,6 +137,10 @@ func TestLoad(t *testing.T) {
 
 	if cfg.Proxy.User != "deploy" {
 		t.Fatalf("Proxy.User = %q, want %q", cfg.Proxy.User, "deploy")
+	}
+
+	if cfg.Proxy.SSHConfigPath != "/keys/ssh_config.app" {
+		t.Fatalf("Proxy.SSHConfigPath = %q, want %q", cfg.Proxy.SSHConfigPath, "/keys/ssh_config.app")
 	}
 
 	if cfg.Proxy.PrivateKeyPath != "/keys/proxy" {
@@ -349,6 +354,19 @@ func TestLoadLeavesProxyCommandsEmptyWhenUnset(t *testing.T) {
 
 	if cfg.Proxy.RemovePeerCommand != "" {
 		t.Fatalf("Proxy.RemovePeerCommand = %q, want empty", cfg.Proxy.RemovePeerCommand)
+	}
+}
+
+func TestLoadLeavesProxySSHConfigPathEmptyWhenUnset(t *testing.T) {
+	t.Setenv("DB_URL", "postgres://test:test@localhost:5432/test?sslmode=disable")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Proxy.SSHConfigPath != "" {
+		t.Fatalf("Proxy.SSHConfigPath = %q, want empty", cfg.Proxy.SSHConfigPath)
 	}
 }
 

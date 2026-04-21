@@ -114,11 +114,19 @@ func newCreateDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*CreateDeviceU
 		{name: "VPN_SERVER_PUBLIC_KEY", present: cfg.VPN.ServerPublicKey != ""},
 		{name: "VPN_SERVER_ENDPOINT", present: cfg.VPN.Endpoint != ""},
 		{name: "PROXY_SSH_HOST", present: cfg.Proxy.Host != ""},
-		{name: "PROXY_SSH_USER", present: cfg.Proxy.User != ""},
-		{name: "PROXY_SSH_PRIVATE_KEY_PATH", present: cfg.Proxy.PrivateKeyPath != ""},
 		{name: "PROXY_ADD_PEER_COMMAND", present: cfg.Proxy.AddPeerCommand != ""},
 		{name: "PROXY_REMOVE_PEER_COMMAND", present: cfg.Proxy.RemovePeerCommand != ""},
-		{name: "PROXY_SSH_KNOWN_HOSTS_PATH or PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", present: cfg.Proxy.KnownHostsPath != "" || cfg.Proxy.InsecureSkipHostKeyCheck},
+	}
+	if cfg.Proxy.SSHConfigPath != "" {
+		requiredSettings = append(requiredSettings,
+			requiredSetting{name: "PROXY_SSH_CONFIG_PATH", present: cfg.Proxy.SSHConfigPath != ""},
+		)
+	} else {
+		requiredSettings = append(requiredSettings,
+			requiredSetting{name: "PROXY_SSH_USER", present: cfg.Proxy.User != ""},
+			requiredSetting{name: "PROXY_SSH_PRIVATE_KEY_PATH", present: cfg.Proxy.PrivateKeyPath != ""},
+			requiredSetting{name: "PROXY_SSH_KNOWN_HOSTS_PATH or PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", present: cfg.Proxy.KnownHostsPath != "" || cfg.Proxy.InsecureSkipHostKeyCheck},
+		)
 	}
 
 	if !hasAny(requiredSettings) {
@@ -162,6 +170,7 @@ func newCreateDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*CreateDeviceU
 		Host:                     cfg.Proxy.Host,
 		Port:                     cfg.Proxy.Port,
 		User:                     cfg.Proxy.User,
+		SSHConfigPath:            cfg.Proxy.SSHConfigPath,
 		PrivateKeyPath:           cfg.Proxy.PrivateKeyPath,
 		KnownHostsPath:           cfg.Proxy.KnownHostsPath,
 		InsecureSkipHostKeyCheck: cfg.Proxy.InsecureSkipHostKeyCheck,
@@ -259,10 +268,18 @@ func newApplyInviteCodeUseCase(db *pgxpool.Pool) *ApplyInviteCodeUseCase {
 func newRevokeDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*RevokeDeviceUseCase, error) {
 	requiredSettings := []requiredSetting{
 		{name: "PROXY_SSH_HOST", present: cfg.Proxy.Host != ""},
-		{name: "PROXY_SSH_USER", present: cfg.Proxy.User != ""},
-		{name: "PROXY_SSH_PRIVATE_KEY_PATH", present: cfg.Proxy.PrivateKeyPath != ""},
 		{name: "PROXY_REMOVE_PEER_COMMAND", present: cfg.Proxy.RemovePeerCommand != ""},
-		{name: "PROXY_SSH_KNOWN_HOSTS_PATH or PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", present: cfg.Proxy.KnownHostsPath != "" || cfg.Proxy.InsecureSkipHostKeyCheck},
+	}
+	if cfg.Proxy.SSHConfigPath != "" {
+		requiredSettings = append(requiredSettings,
+			requiredSetting{name: "PROXY_SSH_CONFIG_PATH", present: cfg.Proxy.SSHConfigPath != ""},
+		)
+	} else {
+		requiredSettings = append(requiredSettings,
+			requiredSetting{name: "PROXY_SSH_USER", present: cfg.Proxy.User != ""},
+			requiredSetting{name: "PROXY_SSH_PRIVATE_KEY_PATH", present: cfg.Proxy.PrivateKeyPath != ""},
+			requiredSetting{name: "PROXY_SSH_KNOWN_HOSTS_PATH or PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK", present: cfg.Proxy.KnownHostsPath != "" || cfg.Proxy.InsecureSkipHostKeyCheck},
+		)
 	}
 
 	if !hasAny(requiredSettings) {
@@ -280,6 +297,7 @@ func newRevokeDeviceUseCase(cfg config.Config, db *pgxpool.Pool) (*RevokeDeviceU
 		Host:                     cfg.Proxy.Host,
 		Port:                     cfg.Proxy.Port,
 		User:                     cfg.Proxy.User,
+		SSHConfigPath:            cfg.Proxy.SSHConfigPath,
 		PrivateKeyPath:           cfg.Proxy.PrivateKeyPath,
 		KnownHostsPath:           cfg.Proxy.KnownHostsPath,
 		InsecureSkipHostKeyCheck: cfg.Proxy.InsecureSkipHostKeyCheck,

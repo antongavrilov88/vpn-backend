@@ -102,6 +102,7 @@ The backend SSH transport config is defined by these settings:
 | `PROXY_SSH_HOST` | proxy host or IP |
 | `PROXY_SSH_PORT` | SSH port |
 | `PROXY_SSH_USER` | SSH user |
+| `PROXY_SSH_CONFIG_PATH` | optional dedicated OpenSSH client config file used with `ssh -F` |
 | `PROXY_SSH_PRIVATE_KEY_PATH` | path to backend SSH private key used for proxy access |
 | `PROXY_SSH_KNOWN_HOSTS_PATH` | path to known hosts file for proxy host verification |
 | `PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK` | explicit insecure fallback for non-production bootstrap only |
@@ -115,6 +116,17 @@ Recommended sample values:
 PROXY_ADD_PEER_COMMAND=sudo /usr/local/bin/vpn-peer-add
 PROXY_REMOVE_PEER_COMMAND=sudo /usr/local/bin/vpn-peer-remove
 ```
+
+When `PROXY_SSH_CONFIG_PATH` is set, the backend uses the system `ssh` client as:
+
+```bash
+ssh -F <config_path> <host_or_alias> <remote_command>
+```
+
+This keeps the control plane independent from the machine-wide default
+`/etc/ssh/ssh_config`. In that mode, `PROXY_SSH_HOST` may be a dedicated SSH
+alias such as `yc-vpnmgr`, and the config file may own `HostName`, `User`,
+`IdentityFile`, and `UserKnownHostsFile`.
 
 ## Security Notes
 

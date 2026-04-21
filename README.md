@@ -48,10 +48,17 @@ Fill these only when you want `CreateDevice` to touch a real proxy/VPN setup:
 - `VPN_ALLOWED_IPS`
 - `PROXY_SSH_HOST`
 - `PROXY_SSH_USER`
+- `PROXY_SSH_CONFIG_PATH`
 - `PROXY_SSH_PRIVATE_KEY_PATH`
 - `PROXY_SSH_KNOWN_HOSTS_PATH` or `PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK=true`
 - `PROXY_ADD_PEER_COMMAND`
 - `PROXY_REMOVE_PEER_COMMAND`
+
+If `PROXY_SSH_CONFIG_PATH` is set, the backend uses the system `ssh` client with
+that dedicated config file and does not rely on the host's default
+`/etc/ssh/ssh_config`. In that mode, `PROXY_SSH_HOST` may be an SSH host alias
+such as `yc-vpnmgr`, and the config file can own the final host, user,
+identity, and known-hosts settings.
 
 If `VPN_ALLOWED_IPS` is omitted, generated client configs default to `0.0.0.0/0`.
 Set `VPN_ALLOWED_IPS` only when you need a different client-route policy.
