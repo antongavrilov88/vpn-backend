@@ -27,8 +27,8 @@ cp .env.local.example .env.local
 
 Both `make ...` and plain `go run ...` now read env files automatically in this order:
 
-- `.env.local`
 - `.env`
+- `.env.local`
 
 The example files are templates only. They are not loaded automatically.
 
@@ -39,6 +39,18 @@ For local work, keep real values in ignored files:
 
 That keeps git clean while still allowing `make ...` and `go run ...` to work without manual `export` commands.
 
+Detailed field-by-field guidance for:
+
+- local `.env`
+- machine-specific `.env.local`
+- app-host `/opt/vpn/env/api.env`
+- app-host `/opt/vpn/env/bot.env`
+- freeze-state `.env.freeze`
+- safe verification / backup flows
+
+is in:
+- [docs/runbooks/env-setup-and-testing.md](/Users/antongavrilov/Desktop/workspace/vpn-backend/docs/runbooks/env-setup-and-testing.md)
+
 Fill these only when you want `CreateDevice` to touch a real proxy/VPN setup:
 
 - `DEVICE_PRIVATE_KEY_CIPHER_KEY`
@@ -48,10 +60,17 @@ Fill these only when you want `CreateDevice` to touch a real proxy/VPN setup:
 - `VPN_ALLOWED_IPS`
 - `PROXY_SSH_HOST`
 - `PROXY_SSH_USER`
+- `PROXY_SSH_CONFIG_PATH`
 - `PROXY_SSH_PRIVATE_KEY_PATH`
 - `PROXY_SSH_KNOWN_HOSTS_PATH` or `PROXY_SSH_INSECURE_SKIP_HOST_KEY_CHECK=true`
 - `PROXY_ADD_PEER_COMMAND`
 - `PROXY_REMOVE_PEER_COMMAND`
+
+If `PROXY_SSH_CONFIG_PATH` is set, the backend uses the system `ssh` client with
+that dedicated config file and does not rely on the host's default
+`/etc/ssh/ssh_config`. In that mode, `PROXY_SSH_HOST` may be an SSH host alias
+such as `yc-vpnmgr`, and the config file can own the final host, user,
+identity, and known-hosts settings.
 
 If `VPN_ALLOWED_IPS` is omitted, generated client configs default to `0.0.0.0/0`.
 Set `VPN_ALLOWED_IPS` only when you need a different client-route policy.
@@ -128,6 +147,29 @@ make bot-run
 
 Bot setup and behavior:
 - [docs/telegram-bot.md](/Users/antongavrilov/Desktop/workspace/vpn-backend/docs/telegram-bot.md)
+
+## Freeze-State And Ops Scripts
+
+The repository now includes a freeze-state kit for the current working contour:
+
+- [docs/runbooks/golden-contour.md](/Users/antongavrilov/Desktop/workspace/vpn-backend/docs/runbooks/golden-contour.md)
+- [docs/secrets-inventory.md](/Users/antongavrilov/Desktop/workspace/vpn-backend/docs/secrets-inventory.md)
+- [docs/runbooks/env-setup-and-testing.md](/Users/antongavrilov/Desktop/workspace/vpn-backend/docs/runbooks/env-setup-and-testing.md)
+
+Operational scripts:
+
+- `bash scripts/verify_contour.sh`
+  Read-only contour verification plus optional disposable create/revoke smoke if `.env.freeze` contains `SMOKE_TELEGRAM_ID` or `SMOKE_USER_ID`.
+- `bash scripts/freeze_collect.sh`
+  Redacted operational snapshot into `artifacts/`.
+- `bash scripts/backup_bundle.sh`
+  Raw recovery bundle into `backup/`. This copies live secrets and recovery material.
+
+All three scripts are parameterizable:
+
+- `FREEZE_ENV_FILE=/path/to/custom.freeze`
+- `ARTIFACT_ROOT=/path/to/output-dir` for `freeze_collect.sh`
+- `BUNDLE_ROOT=/path/to/output-dir` for `backup_bundle.sh`
 
 ## Useful Commands
 

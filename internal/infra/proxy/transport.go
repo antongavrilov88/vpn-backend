@@ -3,10 +3,13 @@ package proxy
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -17,13 +20,15 @@ import (
 )
 
 type Transport struct {
-	address           string
+	target            string
 	user              string
 	signer            ssh.Signer
 	hostKeyCallback   ssh.HostKeyCallback
 	addPeerCommand    string
 	removePeerCommand string
 	timeout           time.Duration
+	sshConfigPath     string
+	sshBinaryPath     string
 }
 
 var _ domain.VPNTransport = (*Transport)(nil)
@@ -32,6 +37,7 @@ type Config struct {
 	Host                     string
 	Port                     int
 	User                     string
+	SSHConfigPath            string
 	PrivateKeyPath           string
 	KnownHostsPath           string
 	InsecureSkipHostKeyCheck bool
@@ -40,17 +46,14 @@ type Config struct {
 	Timeout                  time.Duration
 }
 
+var (
+	lookPath           = exec.LookPath
+	execCommandContext = exec.CommandContext
+)
+
 func NewTransport(cfg Config) (*Transport, error) {
 	if cfg.Host == "" {
 		return nil, fmt.Errorf("proxy ssh host is required")
-	}
-
-	if cfg.User == "" {
-		return nil, fmt.Errorf("proxy ssh user is required")
-	}
-
-	if cfg.PrivateKeyPath == "" {
-		return nil, fmt.Errorf("proxy ssh private key path is required")
 	}
 
 	if cfg.AddPeerCommand == "" {
@@ -59,16 +62,6 @@ func NewTransport(cfg Config) (*Transport, error) {
 
 	if cfg.RemovePeerCommand == "" {
 		return nil, fmt.Errorf("proxy remove peer command is required")
-	}
-
-	signer, err := loadSigner(cfg.PrivateKeyPath)
-	if err != nil {
-		return nil, err
-	}
-
-	hostKeyCallback, err := newHostKeyCallback(cfg.KnownHostsPath, cfg.InsecureSkipHostKeyCheck)
-	if err != nil {
-		return nil, err
 	}
 
 	port := cfg.Port
@@ -81,8 +74,42 @@ func NewTransport(cfg Config) (*Transport, error) {
 		timeout = 5 * time.Second
 	}
 
+	if cfg.SSHConfigPath != "" {
+		sshBinaryPath, err := lookPath("ssh")
+		if err != nil {
+			return nil, fmt.Errorf("locate ssh client: %w", err)
+		}
+
+		return &Transport{
+			target:            openSSHTarget(cfg.Host, cfg.User),
+			addPeerCommand:    cfg.AddPeerCommand,
+			removePeerCommand: cfg.RemovePeerCommand,
+			timeout:           timeout,
+			sshConfigPath:     cfg.SSHConfigPath,
+			sshBinaryPath:     sshBinaryPath,
+		}, nil
+	}
+
+	if cfg.User == "" {
+		return nil, fmt.Errorf("proxy ssh user is required")
+	}
+
+	if cfg.PrivateKeyPath == "" {
+		return nil, fmt.Errorf("proxy ssh private key path is required")
+	}
+
+	signer, err := loadSigner(cfg.PrivateKeyPath)
+	if err != nil {
+		return nil, err
+	}
+
+	hostKeyCallback, err := newHostKeyCallback(cfg.KnownHostsPath, cfg.InsecureSkipHostKeyCheck)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Transport{
-		address:           net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", port)),
+		target:            net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", port)),
 		user:              cfg.User,
 		signer:            signer,
 		hostKeyCallback:   hostKeyCallback,
@@ -132,7 +159,11 @@ func (t *Transport) Reconcile(context.Context, domain.ReconcileInput) (*domain.R
 }
 
 func (t *Transport) run(ctx context.Context, command string) error {
-	client, err := ssh.Dial("tcp", t.address, &ssh.ClientConfig{
+	if t.sshConfigPath != "" {
+		return runSystemSSHCommand(ctx, t.timeout, t.sshBinaryPath, buildOpenSSHArgs(t.sshConfigPath, t.target, t.timeout, command))
+	}
+
+	client, err := ssh.Dial("tcp", t.target, &ssh.ClientConfig{
 		User:            t.user,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(t.signer)},
 		HostKeyCallback: t.hostKeyCallback,
@@ -149,9 +180,83 @@ func (t *Transport) run(ctx context.Context, command string) error {
 	}
 	defer session.Close()
 
+	return runRemoteCommand(ctx, t.timeout, func() ([]byte, error) {
+		return session.CombinedOutput(command)
+	}, func() {
+		_ = session.Close()
+		_ = client.Close()
+	})
+}
+
+func runSystemSSHCommand(ctx context.Context, timeout time.Duration, sshBinaryPath string, args []string) error {
+	commandCtx := ctx
+	cancel := func() {}
+	if timeout > 0 {
+		commandCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+
+	cmd := execCommandContext(commandCtx, sshBinaryPath, args...)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(commandCtx.Err(), context.DeadlineExceeded) && timeout > 0 {
+		return fmt.Errorf("proxy ssh command timed out after %s: %w", timeout, commandCtx.Err())
+	}
+
+	message := strings.TrimSpace(string(output))
+	if message == "" {
+		message = err.Error()
+	}
+
+	return fmt.Errorf("%w: %s", err, message)
+}
+
+func buildOpenSSHArgs(configPath, target string, timeout time.Duration, command string) []string {
+	args := []string{
+		"-F", configPath,
+		"-o", "BatchMode=yes",
+		"-o", "IdentitiesOnly=yes",
+	}
+
+	if timeout > 0 {
+		args = append(args, "-o", fmt.Sprintf("ConnectTimeout=%d", sshConnectTimeoutSeconds(timeout)))
+	}
+
+	args = append(args, target, command)
+	return args
+}
+
+func openSSHTarget(host, user string) string {
+	if user == "" {
+		return host
+	}
+
+	return user + "@" + host
+}
+
+func sshConnectTimeoutSeconds(timeout time.Duration) int {
+	seconds := int(math.Ceil(timeout.Seconds()))
+	if seconds < 1 {
+		return 1
+	}
+
+	return seconds
+}
+
+func runRemoteCommand(ctx context.Context, timeout time.Duration, execute func() ([]byte, error), interrupt func()) error {
+	commandCtx := ctx
+	cancel := func() {}
+	if timeout > 0 {
+		commandCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+
 	result := make(chan error, 1)
 	go func() {
-		output, runErr := session.CombinedOutput(command)
+		output, runErr := execute()
 		if runErr != nil {
 			message := strings.TrimSpace(string(output))
 			if message == "" {
@@ -166,10 +271,24 @@ func (t *Transport) run(ctx context.Context, command string) error {
 	}()
 
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
 	case err := <-result:
 		return err
+	case <-commandCtx.Done():
+		interrupt()
+
+		select {
+		case err := <-result:
+			if err == nil {
+				return nil
+			}
+		default:
+		}
+
+		if errors.Is(commandCtx.Err(), context.DeadlineExceeded) && timeout > 0 {
+			return fmt.Errorf("proxy ssh command timed out after %s: %w", timeout, commandCtx.Err())
+		}
+
+		return commandCtx.Err()
 	}
 }
 

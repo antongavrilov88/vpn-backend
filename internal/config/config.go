@@ -62,6 +62,7 @@ type ProxyConfig struct {
 	Host                     string
 	Port                     int
 	User                     string
+	SSHConfigPath            string
 	PrivateKeyPath           string
 	KnownHostsPath           string
 	InsecureSkipHostKeyCheck bool
@@ -214,6 +215,7 @@ func Load() (Config, error) {
 			Host:                     getEnv("PROXY_SSH_HOST", ""),
 			Port:                     proxyPort,
 			User:                     getEnv("PROXY_SSH_USER", ""),
+			SSHConfigPath:            getEnv("PROXY_SSH_CONFIG_PATH", ""),
 			PrivateKeyPath:           getEnv("PROXY_SSH_PRIVATE_KEY_PATH", ""),
 			KnownHostsPath:           getEnv("PROXY_SSH_KNOWN_HOSTS_PATH", ""),
 			InsecureSkipHostKeyCheck: insecureSkipHostKeyCheck,

@@ -29,6 +29,7 @@ services:
     volumes:
       - /opt/vpn/secrets/proxy_ed25519:/run/secrets/proxy_ssh_key:ro
       - /opt/vpn/secrets/proxy_known_hosts:/run/secrets/proxy_known_hosts:ro
+      - /opt/vpn/secrets/ssh_config.app:/run/secrets/ssh_config.app:ro
     ports:
       - "8080:8080"
 
